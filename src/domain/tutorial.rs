@@ -27,6 +27,10 @@ pub(crate) enum Did {
     ProxyDeleted,
     /// Pruned messages.
     Pruned,
+    /// Bought something in the shop.
+    Bought,
+    /// Changed the shop's shelf or a player's inventory, as staff.
+    ShopChanged,
 }
 
 /// What finishes a step.
@@ -42,6 +46,8 @@ pub(crate) enum Expect {
     ProxyEdited,
     ProxyDeleted,
     Pruned,
+    Bought,
+    ShopChanged,
 }
 
 impl Expect {
@@ -51,6 +57,7 @@ impl Expect {
             (Self::PanelPick, Did::PanelPick | Did::DotSet) => true,
             (Self::DotSet, Did::DotSet) | (Self::PrefixSet, Did::PrefixSet) | (Self::ProxyEdited, Did::ProxyEdited) => true,
             (Self::ProxyDeleted, Did::ProxyDeleted) | (Self::Pruned, Did::Pruned) => true,
+            (Self::Bought, Did::Bought) | (Self::ShopChanged, Did::ShopChanged) => true,
             (Self::Proxied, Did::Proxied { npc: false, .. }) => true,
             (Self::ProxiedWithExpression, Did::Proxied { expression: true, npc: false }) => true,
             (Self::ProxiedAsNpc, Did::Proxied { npc: true, .. }) => true,
@@ -86,8 +93,8 @@ impl Track {
 
     pub(crate) const fn label(self) -> &'static str {
         match self {
-            Self::Players => "Players: your page, slots, posting as your character",
-            Self::Staff => "Staff: the admin pages, NPCs, Spirit Points, clean-up",
+            Self::Players => "Players: your page, slots, posting as your character, the shop",
+            Self::Staff => "Staff: the admin pages, NPCs, Spirit Points, the shop, clean-up",
         }
     }
 
@@ -130,6 +137,7 @@ const PLAYERS: &[Step] = &[
     Step { id: "edit", title: "Edit a post", task: "React ✏️ to one of your posts, press **Edit**, and change the text.", expect: Expect::ProxyEdited },
     Step { id: "delete", title: "Delete a post", task: "React ❌ to one of your posts: it is gone, every part of it.", expect: Expect::ProxyDeleted },
     Step { id: "profile", title: "Show a card", task: "Type **`/profile`**: everyone in the channel sees your character's card.", expect: Expect::Command("profile") },
+    Step { id: "shop", title: "The shop", task: "On your page, open **Shop** and buy something: the 🎁 Starter Capsule is free. It lands in your **Inventory**.", expect: Expect::Bought },
     Step { id: "help", title: "Look it up", task: "Type **`/help`**, or `/help posting`, whenever you forget.", expect: Expect::Command("help") },
 ];
 
@@ -137,6 +145,7 @@ const STAFF: &[Step] = &[
     Step { id: "admin", title: "The admin pages", task: "Type **`/z_moderator_admin`**. The link comes by DM: players, characters, NPCs, McGuffins, Dragon Balls, worlds.", expect: Expect::Command("z_moderator_admin") },
     Step { id: "npc", title: "Post as an NPC", task: "On the admin pages, **NPCs**: add one with a prefix. Then post here as it: **`<prefix>: Greetings.`** Any staff member may post as any NPC.", expect: Expect::ProxiedAsNpc },
     Step { id: "sp", title: "Spirit Points", task: "Type **`/z_moderator_sp action:history player:@you`**, naming yourself.", expect: Expect::Command("z_moderator_sp") },
+    Step { id: "shop", title: "The shop", task: "On the admin pages, **Shop**: add an item or change one. Or open a player and set what they own, under **Inventory**.", expect: Expect::ShopChanged },
     Step { id: "prune", title: "Clean up", task: "Type **`.prune 1`** here: it deletes the message before it, then itself.", expect: Expect::Pruned },
     Step { id: "help", title: "Look it up", task: "Type **`/help`**: staff see staff pages too. Try `/help sp give`.", expect: Expect::Command("help") },
 ];
@@ -166,5 +175,6 @@ mod tests {
         assert!(Expect::ProxiedWithExpression.met_by(&Did::Proxied { expression: true, npc: false }));
         assert!(!Expect::Proxied.met_by(&Did::Proxied { expression: false, npc: true }));
         assert!(Expect::ProxiedAsNpc.met_by(&Did::Proxied { expression: false, npc: true }));
+        assert!(Expect::Bought.met_by(&Did::Bought) && !Expect::Bought.met_by(&Did::ShopChanged));
     }
 }

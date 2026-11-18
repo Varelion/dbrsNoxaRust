@@ -44,9 +44,10 @@ cookies: the token is the login, and a player's link never opens the admin pages
 | Characters, NPCs | every sheet: name, prefix, race, tier, title, bio, notes, picture (link or upload); McGuffins held; feats |
 | McGuffins | make, edit, give, take back, retire, restore; where it lies: a world, one channel, or rolled among the roleplay channels |
 | Worlds | which categories are worlds; their text channels are the roleplay channels |
+| Shop | emoji items for Spirit Points: add, edit, hide, remove; a player's page sets what they own |
 | Dragon Balls | search areas (categories, channels), the roll, where each ball hides, scatter |
 
-| Player page (`/mypage`) | your characters as cards, who you play (one press), your Spirit Points and ledger, everyone else's cards |
+| Player page (`/mypage`) | your characters as cards, who you play (one press), your Spirit Points and ledger, the shop and your inventory, everyone else's cards |
 
 An uploaded picture is posted to `PICTURES_CHANNEL` with the image attached; its link expires, so the
 bot fetches a fresh one from that message when needed. The bot needs View Channel, Send Messages,

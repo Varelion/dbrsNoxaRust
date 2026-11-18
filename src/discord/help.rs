@@ -178,7 +178,20 @@ const GUIDES: &[Guide] = &[
             "The link works until 30 minutes pass without use, 4 hours at most. A new one replaces the old. Never share it.",
             "**My characters**: each as a card. **Play as <name>** under a card makes them the one you play.",
             "**Spirit Points**: your balance and its last changes. Staff give them; posting earns none.",
+            "**Shop**: spend Spirit Points; what you buy shows under **Inventory** (`/help shop`).",
             "**Players**: everyone with a character, and their cards.",
+        ],
+        commands: &[("/mypage", &["/mypage"])],
+    },
+    Guide {
+        name: "shop",
+        audience: Audience::Everyone,
+        summary: "Spend Spirit Points in the shop; your inventory",
+        steps: &[
+            "1. `/mypage`, then **Shop** in the menu: every item, its price, and how many you have.",
+            "2. Pick how many and press **Buy**. The Spirit Points go at once; the item lands in your **Inventory**.",
+            "A free item is one each. Every purchase shows in your Spirit Points history and the mod log.",
+            "Staff keep the shop and can set what anyone owns.",
         ],
         commands: &[("/mypage", &["/mypage"])],
     },
@@ -208,7 +221,7 @@ const GUIDES: &[Guide] = &[
     Guide {
         name: "admin",
         audience: Audience::Staff,
-        summary: "The admin pages: players, characters, NPCs, McGuffins, Dragon Balls, worlds",
+        summary: "The admin pages: players, characters, NPCs, McGuffins, Dragon Balls, worlds, the shop",
         steps: &[
             "`/z_moderator_admin` DMs you a link: 30 minutes without use, 4 hours at most; a new one replaces the old.",
             "**Players**: Spirit Points (give, take, set, with a memo), the ledger, add a character.",
@@ -216,6 +229,7 @@ const GUIDES: &[Guide] = &[
             "**McGuffins**: make, edit, place, give, take back, retire, restore.",
             "**Dragon Balls**: the roll needed, search areas, hiding places, scatter.",
             "**Worlds**: which categories are worlds; their text channels are the roleplay channels.",
+            "**Shop**: add, edit, hide or remove items. A player's page sets what they own, under **Inventory**; 0 takes it away.",
             "Never share the link. A player's /mypage link never opens these pages.",
         ],
         commands: &[("/z_moderator_admin", &["/z_moderator_admin"])],

@@ -2,7 +2,7 @@
 //! Every value from the database, Discord or a form is escaped on the way out.
 //!
 //! ```text
-//!   ┌ 🐉 Raging Spirit · admin   Home  Players  Characters  NPCs  McGuffins  Dragon Balls ┐
+//!   ┌ 🐉 Raging Spirit · admin   Home  Players  Characters  NPCs  McGuffins  Dragon Balls  Worlds  Shop ┐
 //!   │ <notice: what the last form did, once>                                              │
 //!   │ <the page>                                                                          │
 //!   └ This link is yours alone. It stops after 30 idle minutes. ──────────────────────────┘
@@ -57,6 +57,7 @@ footer{max-width:1100px;margin:0 auto;padding:0 max(16px,4vw) 32px;color:var(--m
 .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,320px),1fr));gap:18px;align-items:start}
 .card.playing{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
 .bio{white-space:pre-line}
+.emoji{font-size:40px;line-height:1}
 details{border-top:1px solid var(--line);padding-top:8px}summary{cursor:pointer;color:var(--muted)}details .card{border:0;padding:8px 0 0}
 ";
 
@@ -70,9 +71,10 @@ pub(super) enum Section {
     Mcguffins,
     Balls,
     Worlds,
+    Shop,
 }
 
-const SECTIONS: [(Section, &str, &str); 7] = [
+const SECTIONS: [(Section, &str, &str); 8] = [
     (Section::Home, "", "Home"),
     (Section::Players, "/players", "Players"),
     (Section::Characters, "/characters", "Characters"),
@@ -80,6 +82,7 @@ const SECTIONS: [(Section, &str, &str); 7] = [
     (Section::Mcguffins, "/mcguffins", "McGuffins"),
     (Section::Balls, "/balls", "Dragon Balls"),
     (Section::Worlds, "/worlds", "Worlds"),
+    (Section::Shop, "/shop", "Shop"),
 ];
 
 /// HTML-escaped: safe inside text and quoted attributes.
@@ -199,10 +202,11 @@ pub(super) fn page(token: &str, section: Section, title: &str, told: Option<&Not
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Mine {
     Me,
+    Shop,
     Players,
 }
 
-const MINE: [(Mine, &str, &str); 2] = [(Mine::Me, "", "My characters"), (Mine::Players, "/players", "Players")];
+const MINE: [(Mine, &str, &str); 3] = [(Mine::Me, "", "My characters"), (Mine::Shop, "/shop", "Shop"), (Mine::Players, "/players", "Players")];
 
 /// A player's page: their menu, what the last form did, the page, the footer.
 pub(super) fn player_page(token: &str, section: Mine, title: &str, told: Option<&Notice>, body: &str) -> String {

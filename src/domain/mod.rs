@@ -7,6 +7,7 @@ pub(crate) mod mcguffins;
 pub(crate) mod npcs;
 pub(crate) mod pictures;
 pub(crate) mod proxy;
+pub(crate) mod shop;
 pub(crate) mod links;
 pub(crate) mod spirit;
 pub(crate) mod tutorial;

@@ -461,3 +461,54 @@ async fn a_player_sets_their_prefix_and_expressions_on_their_page_and_the_tutori
     assert!(page.contains("Saved Noxa&#39;s angry expression."));
     assert!(admin.line().await.contains("saved expression **angry** for **Noxa**"));
 }
+
+#[tokio::test]
+async fn a_player_buys_in_the_shop_and_it_lands_in_their_inventory() {
+    let mut admin = admin();
+    admin.services.settings().set_mod_log(MOD_LOG).unwrap();
+    admin.post(&format!("/players/{NOVA_PLAYER}/sp"), "action=give&amount=60&memo=event").await;
+    admin.line().await;
+    let home = format!("/p/{}", admin.services.links().issue(NOVA_PLAYER, Access::Player).unwrap());
+    let senzu = admin.services.shop().items(crate::services::shop::Shelf::Listed).unwrap().into_iter().find(|i| i.name == "Senzu Bean").unwrap();
+
+    let shelf = admin.get(&format!("{home}/shop")).await;
+    assert!(shelf.contains("Senzu Bean") && shelf.contains("60 Spirit Points to spend"));
+
+    let page = admin.post(&format!("{home}/shop/{}/buy", senzu.id), "count=2").await;
+    assert!(page.contains("Bought 2 × 🫘 Senzu Bean. You have 2; 10 Spirit Points left."));
+    assert_eq!(admin.line().await, format!("🛒 <@{NOVA_PLAYER}> bought 2 × 🫘 Senzu Bean for 50 SP (10 SP left) · /mypage"));
+    assert_eq!(admin.line().await, format!("did {NOVA_PLAYER} Bought"));
+
+    let page = admin.post(&format!("{home}/shop/{}/buy", senzu.id), "count=1").await;
+    assert!(page.contains("That costs 25 SP; you have 10."));
+    assert!(admin.get(&home).await.contains("🫘 Senzu Bean</td><td class=\"num\">×2"));
+}
+
+#[tokio::test]
+async fn staff_keep_the_shop_and_set_what_a_player_owns() {
+    let mut admin = admin();
+    let page = admin.post("/shop", "emoji=%F0%9F%94%AE&name=Crystal+Ball&price=30&listed=on").await;
+    assert!(page.contains("Set the mod log first"));
+    admin.services.settings().set_mod_log(MOD_LOG).unwrap();
+
+    let page = admin.post("/shop", "emoji=%F0%9F%94%AE&name=Crystal+Ball&price=30&listed=on").await;
+    assert!(page.contains("🔮 Crystal Ball is in the shop."));
+    assert_eq!(admin.line().await, format!("🛒 <@{STAFF}> added 🔮 Crystal Ball to the shop: 30 SP · admin pages"));
+    assert_eq!(admin.line().await, format!("did {STAFF} ShopChanged"));
+    let orb = admin.services.shop().items(crate::services::shop::Shelf::All).unwrap().into_iter().find(|i| i.name == "Crystal Ball").unwrap();
+
+    let page = admin.post(&format!("/shop/{}", orb.id), "emoji=%F0%9F%94%AE&name=Crystal+Ball&price=nine").await;
+    assert!(page.contains("Price: a whole number"));
+    admin.post(&format!("/shop/{}", orb.id), "emoji=%F0%9F%94%AE&name=Crystal+Ball&price=35").await;
+    assert_eq!(admin.line().await, format!("🛒 <@{STAFF}> edited 🔮 Crystal Ball in the shop: 35 SP, hidden · admin pages"));
+    admin.line().await;
+
+    let page = admin.post(&format!("/players/{NOVA_PLAYER}/inventory"), &format!("item={}&count=3", orb.id)).await;
+    assert!(page.contains("🔮 Crystal Ball: 0 → 3."));
+    assert_eq!(admin.line().await, format!("🎒 <@{STAFF}> set <@{NOVA_PLAYER}>'s 🔮 Crystal Ball: 0 → **3** · admin pages"));
+    admin.line().await;
+
+    let page = admin.post(&format!("/shop/{}/remove", orb.id), "").await;
+    assert!(page.contains("Removed 🔮 Crystal Ball; 1 players lost it."));
+    assert!(admin.services.shop().inventory(NOVA_PLAYER).unwrap().is_empty());
+}

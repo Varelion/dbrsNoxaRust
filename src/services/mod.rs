@@ -8,6 +8,7 @@
 //!                         ├─► balls()       Dragon Ball areas, rolls and hiding places
 //!                         ├─► mcguffins()   plot items and their holders
 //!                         ├─► sheets()      any character's sheet; new NPCs
+//!                         ├─► shop()        the shelf, inventories, purchases
 //!                         ├─► links()       one-time web links for staff
 //!                         ├─► feats()       silent feats and their links
 //!                         └─► settings()    the mod log channel
@@ -29,6 +30,7 @@ pub(crate) mod players;
 pub(crate) mod proxy;
 pub(crate) mod settings;
 pub(crate) mod sheets;
+pub(crate) mod shop;
 pub(crate) mod spirit;
 pub(crate) mod tutorials;
 pub(crate) mod worlds;
@@ -114,6 +116,10 @@ impl Services {
 
     pub(crate) const fn sheets(&self) -> sheets::Sheets<'_> {
         sheets::Sheets::new(&self.store, &self.clock)
+    }
+
+    pub(crate) const fn shop(&self) -> shop::Shop<'_> {
+        shop::Shop::new(&self.store, &self.clock)
     }
 
     pub(crate) const fn players(&self) -> players::Players<'_> {

@@ -5,16 +5,18 @@
 //! ```text
 //!   GET  /p/<token>                                a player: their characters, who they play, Spirit Points
 //!   POST /p/<token>/play                           play another of their characters
+//!   GET  /p/<token>/shop   POST …/shop/<id>/buy    the shop: buy with Spirit Points
 //!   GET  /p/<token>/players[/<id>]                 everyone's characters, as cards
 //!   GET  /a/<token>                                home: counts, mod log
 //!   GET  /a/<token>/players[/<id>]                 players, one player: Spirit Points, ledger, characters
-//!   POST /a/<token>/players/<id>/sp|characters     change Spirit Points, add a character
+//!   POST /a/<token>/players/<id>/sp|characters|inventory  change Spirit Points, add a character, set what they own
 //!   GET  /a/<token>/characters[/<id>]              every character, one sheet: belongings, feats
 //!   POST /a/<token>/characters/<id>[/picture|feats|mcguffins]  save, upload a picture, log a feat, give
 //!   GET  /a/<token>/npcs     POST /a/<token>/npcs  the cast, add an NPC
 //!   POST /a/<token>/feats/<id>/archive|restore
 //!   GET  /a/<token>/mcguffins[/<id>]               POST …/place|give|take|retire, create, edit
 //!   GET  /a/<token>/worlds   POST /a/<token>/worlds  which categories are worlds
+//!   GET  /a/<token>/shop     POST …/shop[/<id>[/remove]]  the shop's items: add, edit, remove
 //!   GET  /a/<token>/balls[/<set>]                  POST …/need|areas|place|scatter
 //!   GET  /healthz                                  "ok"
 //! ```
@@ -30,6 +32,7 @@ mod mypage;
 mod players;
 pub(crate) mod relay;
 mod sheets;
+mod shop;
 mod worlds;
 
 use std::net::SocketAddr;
@@ -158,6 +161,7 @@ pub(crate) fn routes(services: Arc<Services>, guild: Guild) -> Router {
         .route("/a/{token}/players/{player}", get(players::show))
         .route("/a/{token}/players/{player}/sp", post(players::spirit))
         .route("/a/{token}/players/{player}/characters", post(players::add_character))
+        .route("/a/{token}/players/{player}/inventory", post(players::inventory))
         .route("/a/{token}/characters", get(sheets::list))
         .route("/a/{token}/characters/{id}", get(sheets::show).post(sheets::save))
         .route("/a/{token}/characters/{id}/picture", upload)
@@ -175,6 +179,9 @@ pub(crate) fn routes(services: Arc<Services>, guild: Guild) -> Router {
         .route("/a/{token}/mcguffins/{id}/retire", post(mcguffins::retire))
         .route("/a/{token}/mcguffins/{id}/place", post(mcguffins::place))
         .route("/a/{token}/worlds", get(worlds::show).post(worlds::save))
+        .route("/a/{token}/shop", get(shop::list).post(shop::create))
+        .route("/a/{token}/shop/{id}", post(shop::edit))
+        .route("/a/{token}/shop/{id}/remove", post(shop::remove))
         .route("/a/{token}/balls", get(balls::list))
         .route("/a/{token}/balls/{set}", get(balls::show))
         .route("/a/{token}/balls/{set}/need", post(balls::need))
@@ -183,6 +190,8 @@ pub(crate) fn routes(services: Arc<Services>, guild: Guild) -> Router {
         .route("/a/{token}/balls/{set}/scatter", post(balls::scatter))
         .route("/p/{token}", get(mypage::home))
         .route("/p/{token}/play", post(mypage::play))
+        .route("/p/{token}/shop", get(mypage::shop))
+        .route("/p/{token}/shop/{id}/buy", post(mypage::buy))
         .route("/p/{token}/characters/{id}/posting", post(mypage::posting))
         .route("/p/{token}/characters/{id}/expressions", post(mypage::add_expression))
         .route("/p/{token}/characters/{id}/expressions/remove", post(mypage::remove_expression))

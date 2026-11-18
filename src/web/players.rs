@@ -1,11 +1,12 @@
-//! Players: everyone with a wallet or a character. One player's page changes their Spirit Points and
-//! adds their characters.
+//! Players: everyone with a wallet or a character. One player's page changes their Spirit Points,
+//! adds their characters, and sets what they own from the shop.
 //!
 //! ```text
 //!   ┌ Nicolas · 157606850269937664 ─────────────────────────────┐
 //!   │ 🔮 12 SP      [give ▾] [amount] [memo]  [Change]          │
 //!   │ Ledger        day · +5 → 12 · memo · by staff             │
 //!   │ Characters    slot · name · race · tier     [slot] [name] [Add] │
+//!   │ Inventory     🫘 Senzu Bean [2] [Set]        [item ▾] [count] [Set] │
 //!   └───────────────────────────────────────────────────────────┘
 //! ```
 
@@ -17,8 +18,11 @@ use serde::Deserialize;
 
 use super::html::{self, Section, esc, options, or_dash, person, plain};
 use super::{NO_MOD_LOG, Page, Web, done, expired, refused};
+use crate::domain::shop::OWN_MAX;
 use crate::domain::spirit::{MEMO_MAX, SP_MAX, SpAction};
+use crate::domain::tutorial::Did;
 use crate::services::characters::{AddCharacter, NAME_MAX, SLOT_MAX};
+use crate::services::shop::{Counted, Shelf};
 use crate::services::spirit::{Change, Changed};
 
 const SP: &str = "SP";
@@ -177,11 +181,13 @@ pub(super) async fn show(State(web): State<Web>, Path((token, player)): Path<(St
         None => format!("<p class=\"dim\">All {SLOT_MAX} slots are taken.</p>"),
     };
 
+    let inventory = inventory_card(&web, &t, player)?;
+
     let title = names.get(&player).cloned().unwrap_or_else(|| player.to_string());
     let body = format!(
         "<header class=\"head\"><div><p><a href=\"/a/{t}/players\">← Players</a></p><h1>{}</h1><p class=\"dim\">{player}</p></div></header>\
          <div class=\"cols\"><section class=\"card\"><h2>🔮 {balance} Spirit Points</h2>{spirit_form}</section>\
-         <section class=\"card\"><h2>Characters</h2>{character_table}{add_form}</section></div>\
+         <section class=\"card\"><h2>Characters</h2>{character_table}{add_form}</section>{inventory}</div>\
          <section class=\"card\"><h2>Ledger</h2>{ledger_table}</section>",
         esc(&title)
     );
@@ -227,6 +233,68 @@ pub(super) async fn spirit(State(web): State<Web>, Path((token, player)): Path<(
         Changed::NoMemo => refused("Write a memo: why."),
         Changed::BadAmount => refused(format!("Amount: a whole number from 1 to {SP_MAX} (set: from 0).")),
         Changed::TooLow { before } => refused(format!("They have {before} {SP}. Take {before} or less, or use set.")),
+    };
+    Ok(web.back(&session, &path, notice))
+}
+
+// What they own from the shop, each count changeable; 0 takes it away.
+fn inventory_card(web: &Web, t: &str, player: u64) -> anyhow::Result<String> {
+    let shop = web.services.shop();
+    let owned = shop.inventory(player)?;
+    let action = format!("/a/{t}/players/{player}/inventory");
+    let rows: String = owned
+        .iter()
+        .map(|(item, count)| {
+            format!(
+                "<tr><td>{}</td><td><form method=\"post\" action=\"{action}\" class=\"inline\"><input type=\"hidden\" name=\"item\" value=\"{}\">\
+                 <input name=\"count\" type=\"number\" min=\"0\" max=\"{OWN_MAX}\" value=\"{count}\" aria-label=\"Count\" style=\"width:6em\">\
+                 <button type=\"submit\" class=\"quiet\">Set</button></form></td></tr>",
+                esc(&item.label()),
+                item.id
+            )
+        })
+        .collect();
+    let table = if owned.is_empty() {
+        "<p class=\"dim\">Owns nothing from the shop.</p>".to_owned()
+    } else {
+        format!("<div class=\"scroll\"><table><thead><tr><th>Item</th><th>Count (0 takes it away)</th></tr></thead><tbody>{rows}</tbody></table></div>")
+    };
+    let choices: Vec<(String, String)> = shop.items(Shelf::All)?.iter().map(|i| (i.id.to_string(), i.label())).collect();
+    let add = format!(
+        "<form method=\"post\" action=\"{action}\" class=\"row\"><label>Item<select name=\"item\">{}</select></label>\
+         <label>Count<input name=\"count\" type=\"number\" min=\"0\" max=\"{OWN_MAX}\" value=\"1\" required></label><button type=\"submit\">Set count</button></form>",
+        options(&choices, "")
+    );
+    Ok(format!("<section class=\"card\"><h2>🎒 Inventory</h2>{table}{add}</section>"))
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+pub(super) struct InventoryInput {
+    item: String,
+    count: String,
+}
+
+pub(super) async fn inventory(State(web): State<Web>, Path((token, player)): Path<(String, u64)>, Form(input): Form<InventoryInput>) -> Page {
+    let Some(session) = web.staff(&token) else {
+        return Ok(expired());
+    };
+    let path = format!("/players/{player}");
+    if !web.logged()? {
+        return Ok(web.back(&session, &path, refused(NO_MOD_LOG)));
+    }
+    let item = input.item.trim().parse::<i64>().unwrap_or_default();
+    let count = input.count.trim().parse::<i64>().unwrap_or(-1);
+
+    let staff = session.staff;
+    let notice = match web.services.shop().set_count(player, item, count)? {
+        Counted::Done { item, before, after } => {
+            web.audit(&format!("🎒 <@{staff}> set <@{player}>'s {}: {before} → **{after}**", plain(&item.label())));
+            web.guild.did(staff, Did::ShopChanged);
+            done(format!("{}: {before} → {after}.", item.label()))
+        }
+        Counted::BadCount => refused(format!("Count: a whole number from 0 to {OWN_MAX}.")),
+        Counted::Missing => refused("That item is gone from the shop."),
     };
     Ok(web.back(&session, &path, notice))
 }

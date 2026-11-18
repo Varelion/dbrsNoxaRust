@@ -12,6 +12,10 @@
 //! ```
 //!
 //! Only what a player may see: no staff notes, no feats, no one else's ledger.
+//!
+//! ```text
+//!   Shop   🫘 Senzu Bean · 25 SP · Heals any wound at once.  [1] [Buy]   ─► 🎒 Inventory: 🫘 ×1
+//! ```
 
 use std::collections::HashMap;
 
@@ -23,14 +27,19 @@ use super::html::{self, Mine, esc, portrait};
 use super::sheets::{ExpressionInput, NameInput, expression_refusal, expressions_card};
 use super::{Page, Web, done, expired, refused};
 use crate::domain::dragon_balls::ball_label;
+use crate::domain::shop::{BUY_MAX, most_owned, price_label};
 use crate::domain::tutorial::Did;
 use crate::services::characters::{Profile, SetActive};
 use crate::services::sheets::{ExpressionSaved, Posting, PostingSaved};
 use crate::services::guild::{Person, Stored, picture_link};
 use crate::services::links::Access;
+use crate::services::shop::{Bought, Shelf};
+use crate::store::shop::ItemRow;
 
 const WALLET_LINES: usize = 10;
 const NOT_YOURS: &str = "Pick one of your own characters.";
+/// Ends the mod log line of a purchase, so staff know where it came from.
+const VIA_PAGE: &str = " · /mypage";
 
 /// A player on a live /mypage link.
 struct Me {
@@ -169,9 +178,10 @@ pub(super) async fn home(State(web): State<Web>, Path(token): Path<String>) -> P
     let cards = if cards.is_empty() { "<section class=\"card\"><p>You have no characters yet. Staff add approved ones.</p></section>".to_owned() } else { format!("<div class=\"cards\">{cards}</div>") };
 
     let name = owner.map_or_else(|| "Your page".to_owned(), |p| p.name.clone());
+    let inventory = inventory_card(&web, &m)?;
     let body = format!(
         "<header><h1>{}</h1><p class=\"dim\">Your characters, who you play, and your Spirit Points. Only you see this page.</p></header>\
-         {cards}<section class=\"card\"><h2>🔮 {balance} Spirit Points</h2>{ledger}</section>",
+         {cards}<div class=\"cols\"><section class=\"card\"><h2>🔮 {balance} Spirit Points</h2>{ledger}</section>{inventory}</div>",
         esc(&name)
     );
     let told = web.services.links().told(&m.token);
@@ -308,4 +318,83 @@ pub(super) async fn remove_expression(State(web): State<Web>, Path((token, id)):
     }
     let notice = if web.services.sheets().remove_expression(id, &input.name)? { done("Removed.") } else { refused("No such expression.") };
     Ok(web.back_to(&m.token, &m.at(""), notice))
+}
+
+// What they own from the shop.
+fn inventory_card(web: &Web, m: &Me) -> anyhow::Result<String> {
+    let owned = web.services.shop().inventory(m.player)?;
+    let list = if owned.is_empty() {
+        format!("<p class=\"dim\">Nothing yet. Buy in the <a href=\"{}\">Shop</a>.</p>", esc(&m.at("/shop")))
+    } else {
+        let rows: String = owned.iter().map(|(item, n)| format!("<tr><td>{}</td><td class=\"num\">×{n}</td></tr>", esc(&item.label()))).collect();
+        format!("<div class=\"scroll\"><table><tbody>{rows}</tbody></table></div>")
+    };
+    Ok(format!("<section class=\"card\"><h2>🎒 Inventory</h2>{list}</section>"))
+}
+
+// One item on the shelf: what it is, its price, how many they have, and a way to buy it.
+fn shelf_card(m: &Me, item: &ItemRow, owned: i64) -> String {
+    let most = most_owned(item.price);
+    let room = (most - owned).min(BUY_MAX);
+    let had = if owned > 0 { format!(" · you have {owned}") } else { String::new() };
+    let buy = if room > 0 {
+        format!(
+            "<form method=\"post\" action=\"{}\" class=\"inline\"><input name=\"count\" type=\"number\" min=\"1\" max=\"{room}\" value=\"1\" aria-label=\"How many\" style=\"width:5em\"><button type=\"submit\">Buy</button></form>",
+            esc(&m.at(&format!("/shop/{}/buy", item.id)))
+        )
+    } else {
+        "<p class=\"dim small\">You have all you may.</p>".to_owned()
+    };
+    format!(
+        "<article class=\"card\"><div class=\"head\"><span class=\"emoji\" aria-hidden=\"true\">{}</span><div><h2>{}</h2><p class=\"dim small\">{}{had}</p></div></div><p>{}</p>{buy}</article>",
+        esc(&item.emoji),
+        esc(&item.name),
+        price_label(item.price),
+        esc(&item.description)
+    )
+}
+
+pub(super) async fn shop(State(web): State<Web>, Path(token): Path<String>) -> Page {
+    let Some(m) = me(&web, &token) else {
+        return Ok(expired());
+    };
+    let shop = web.services.shop();
+    let owned = shop.inventory(m.player)?;
+    let count = |id: i64| owned.iter().find(|(i, _)| i.id == id).map_or(0, |(_, n)| *n);
+    let shelf: String = shop.items(Shelf::Listed)?.iter().map(|item| shelf_card(&m, item, count(item.id))).collect();
+    let shelf = if shelf.is_empty() { "<section class=\"card\"><p>The shop is empty for now.</p></section>".to_owned() } else { format!("<div class=\"cards\">{shelf}</div>") };
+    let balance = web.services.spirit().balance(m.player)?;
+
+    let body = format!(
+        "<header><h1>Shop</h1><p class=\"dim\">🔮 {balance} Spirit Points to spend. What you buy goes to your inventory.</p></header>{shelf}{}",
+        inventory_card(&web, &m)?
+    );
+    let told = web.services.links().told(&m.token);
+    Ok(Html(html::player_page(&m.token, Mine::Shop, "Shop", told.as_ref(), &body)).into_response())
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+pub(super) struct BuyInput {
+    count: String,
+}
+
+pub(super) async fn buy(State(web): State<Web>, Path((token, id)): Path<(String, i64)>, Form(input): Form<BuyInput>) -> Page {
+    let Some(m) = me(&web, &token) else {
+        return Ok(expired());
+    };
+    let count = input.count.trim().parse::<i64>().unwrap_or_default();
+    let notice = match web.services.shop().buy(m.player, id, count)? {
+        Bought::Done { item, count, cost, after, owned } => {
+            tracing::info!(player = m.player, item = %item.name, count, cost, "bought in the shop");
+            web.guild.audit(format!("🛒 <@{}> bought {count} × {} for {} ({after} SP left){VIA_PAGE}", m.player, html::plain(&item.label()), price_label(cost)));
+            web.guild.did(m.player, Did::Bought);
+            done(format!("Bought {count} × {}. You have {owned}; {after} Spirit Points left.", item.label()))
+        }
+        Bought::Missing => refused("That item is not in the shop any more."),
+        Bought::BadCount => refused(format!("Buy from 1 to {BUY_MAX} at a time.")),
+        Bought::TooMany { owned, most } => refused(format!("You may have {most} of it; you have {owned}.")),
+        Bought::TooPoor { balance, cost } => refused(format!("That costs {cost} SP; you have {balance}.")),
+    };
+    Ok(web.back_to(&m.token, &m.at("/shop"), notice))
 }

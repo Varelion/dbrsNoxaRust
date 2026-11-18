@@ -14,6 +14,7 @@ pub(crate) mod mcguffins;
 pub(crate) mod players;
 pub(crate) mod proxied;
 pub(crate) mod settings;
+pub(crate) mod shop;
 pub(crate) mod spirit;
 pub(crate) mod tutorials;
 pub(crate) mod worlds;
@@ -32,6 +33,7 @@ const MIGRATIONS: &[&str] = &[include_str!("../../migrations/0001_init.sql"), in
     include_str!("../../migrations/0005_pictures.sql"),
     include_str!("../../migrations/0006_places.sql"),
     include_str!("../../migrations/0007_posting.sql"),
+    include_str!("../../migrations/0008_shop.sql"),
 ];
 
 // Waits this long for a lock held by a backup or another reader instead of failing at once.
