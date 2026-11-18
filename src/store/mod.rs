@@ -34,6 +34,7 @@ const MIGRATIONS: &[&str] = &[include_str!("../../migrations/0001_init.sql"), in
     include_str!("../../migrations/0006_places.sql"),
     include_str!("../../migrations/0007_posting.sql"),
     include_str!("../../migrations/0008_shop.sql"),
+    include_str!("../../migrations/0009_tom.sql"),
 ];
 
 // Waits this long for a lock held by a backup or another reader instead of failing at once.

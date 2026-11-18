@@ -137,7 +137,7 @@ const PLAYERS: &[Step] = &[
     Step { id: "edit", title: "Edit a post", task: "React ✏️ to one of your posts, press **Edit**, and change the text.", expect: Expect::ProxyEdited },
     Step { id: "delete", title: "Delete a post", task: "React ❌ to one of your posts: it is gone, every part of it.", expect: Expect::ProxyDeleted },
     Step { id: "profile", title: "Show a card", task: "Type **`/profile`**: everyone in the channel sees your character's card.", expect: Expect::Command("profile") },
-    Step { id: "shop", title: "The shop", task: "On your page, open **Shop** and buy something: the 🎁 Starter Capsule is free. It lands in your **Inventory**.", expect: Expect::Bought },
+    Step { id: "shop", title: "The shop", task: "On your page, open **Shop** and buy something: 🧑‍💻 Tom (MySpace) is free. It lands in your **Inventory**.", expect: Expect::Bought },
     Step { id: "help", title: "Look it up", task: "Type **`/help`**, or `/help posting`, whenever you forget.", expect: Expect::Command("help") },
 ];
 

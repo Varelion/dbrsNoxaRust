@@ -224,7 +224,7 @@ mod tests {
         let services = Services::memory(NOW);
         let items = services.shop().items(Shelf::Listed).unwrap();
         assert!(items.len() >= 5);
-        assert_eq!(items[0].label(), "🎁 Starter Capsule");
+        assert_eq!(items[0].label(), "🧑‍💻 Tom (MySpace)");
         assert!(items.windows(2).all(|w| w[0].price <= w[1].price));
     }
 
@@ -268,7 +268,7 @@ mod tests {
     fn a_free_item_is_had_once_and_leaves_no_ledger_line() {
         let services = Services::memory(NOW);
         let shop = services.shop();
-        let gift = named(&services, "Starter Capsule");
+        let gift = named(&services, "Tom (MySpace)");
 
         assert!(matches!(shop.buy(ANN, gift.id, 1).unwrap(), Bought::Done { cost: 0, .. }));
         assert_eq!(shop.buy(ANN, gift.id, 1).unwrap(), Bought::TooMany { owned: 1, most: 1 });

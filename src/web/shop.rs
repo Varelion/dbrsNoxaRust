@@ -5,7 +5,7 @@
 //!   ┌ Shop ───────────────────────────────────────────────┐
 //!   │ [emoji] [name] [price] [description] ☑ listed [Add] │
 //!   │ 🫘 Senzu Bean   25 SP   listed   3 owners  ▸ Edit   │
-//!   │ 🎁 Starter Capsule  Free  hidden  0 owners  ▸ Edit  │
+//!   │ 🧑‍💻 Tom (MySpace)    Free  hidden  0 owners  ▸ Edit  │
 //!   └─────────────────────────────────────────────────────┘
 //! ```
 

@@ -2,7 +2,7 @@
 //!
 //! ```text
 //!   🫘 Senzu Bean    25 SP   buy 2 ─► 50 SP spent ─► inventory: 🫘 Senzu Bean ×2
-//!   🎁 Starter Capsule  free  one each
+//!   🧑‍💻 Tom (MySpace)  free  one each
 //! ```
 
 use super::spirit::SP_MAX;
