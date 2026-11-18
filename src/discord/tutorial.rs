@@ -5,10 +5,12 @@
 //!   /tutorial ─► a private thread "<name>'s tutorial" (public if private ones are not allowed, else DMs)
 //!     **Step 1/10 · Your page**  Type `/mypage` …     [Show again] [Skip] [Stop]
 //!     you type /mypage ─► "✅ Your page: done." ─► **Step 2/10 · Your slots** …
-//!     the last step done ─► 🎓 finished; the thread stays to read back
+//!     the last step done ─► 🎓 finished; a minute later the thread is deleted (DMs stay)
 //! ```
 //!
 //! What counts as done: domain::tutorial. Every handler reports what a person did through `observe`.
+
+use std::time::Duration;
 
 use anyhow::Result;
 use tracing::{info, warn};
@@ -32,7 +34,9 @@ const AGAIN: &str = "again";
 const SKIP: &str = "skip";
 const STOP: &str = "stop";
 const THREAD_NAME_MAX: usize = 90;
-const FINISHED: &str = "🎓 **Tutorial finished.** That is everything you need. `/help` explains any command; `/tutorial` runs this again.";
+const FINISHED: &str = "🎓 **Tutorial finished.** That is everything you need. `/help` explains any command; `/tutorial` runs this again.\n-# This thread is deleted in a minute.";
+/// How long a finished tutorial's thread stays, to read the last message.
+const CLOSE_AFTER: Duration = Duration::from_secs(60);
 
 fn controls(user: Id<UserMarker>) -> Vec<Component> {
     let id = |verb: &str| format!("{PREFIX}{verb}|{user}");
@@ -96,6 +100,23 @@ pub(crate) async fn start(ctx: &Ctx<'_>, opts: &Options<'_>) -> Result<()> {
     ctx.edit(&format!("📘 Your tutorial is open in <#{place}>. Do each step there.")).await
 }
 
+// A finished tutorial's thread, deleted once read. A DM is not a thread and stays.
+async fn close(app: &App, place: Id<ChannelMarker>) {
+    tokio::time::sleep(CLOSE_AFTER).await;
+    let Ok(channel) = app.http.channel(place).await else {
+        return;
+    };
+    let Ok(channel) = channel.model().await else {
+        return;
+    };
+    if !channel.kind.is_thread() {
+        return;
+    }
+    if let Err(source) = app.http.delete_channel(place).await {
+        warn!(?source, "a finished tutorial's thread could not be deleted");
+    }
+}
+
 // A step done: say so, then give the next one, or the end.
 async fn announce(app: &App, user: u64, moved: Moved) {
     let (Some(place), Some(user)) = (moved.thread.and_then(Id::new_checked), Id::new_checked(user)) else {
@@ -108,6 +129,9 @@ async fn announce(app: &App, user: u64, moved: Moved) {
     let components = if moved.next.is_some() { controls(user) } else { Vec::new() };
     if let Err(source) = say(app, place, &next, &components).await {
         warn!(?source, "the tutorial's next step could not be posted");
+    }
+    if moved.next.is_none() {
+        close(app, place).await;
     }
 }
 
