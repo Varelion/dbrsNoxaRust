@@ -1,4 +1,4 @@
-//! Characters: staff add approved ones to a player's slot. Players pick who they play on their /me page.
+//! Characters: staff add approved ones to a player's slot. Players pick who they play on their /mypage page.
 
 use anyhow::Result;
 

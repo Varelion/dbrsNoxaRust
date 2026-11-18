@@ -2,9 +2,13 @@
 //! deletes one. A one-holder McGuffin given to someone new moves to them.
 //!
 //! ```text
-//!   /mcguffins        every McGuffin, and a form to make one
-//!   /mcguffins/<id>   edit it, its holders [take back], give it [character ▾], retire or restore
+//!   /mcguffins        every McGuffin, where it lies, and a form to make one
+//!   /mcguffins/<id>   edit it, where it lies [world ▾ | channel ▾ | random] [re-roll], its holders
+//!                     [take back], give it [character ▾], retire or restore
 //! ```
+//!
+//! Where it lies is picked from the server's channels as they are when the page opens, and checked
+//! again on save: a world is a category ticked on the Worlds page; random rolls one of their text channels.
 
 use std::collections::HashMap;
 
@@ -12,16 +16,25 @@ use axum::extract::{Form, Path, State};
 use axum::response::{Html, IntoResponse};
 use serde::Deserialize;
 
+use super::balls::channel_options;
 use super::html::{self, Section, esc, options, plain};
 use super::{NO_MOD_LOG, Page, Session, Web, done, expired, owner, refused};
-use crate::domain::mcguffins::{DESCRIPTION_MAX, EMOJI_MAX, Holding, NAME_MAX};
+use crate::domain::mcguffins::{DESCRIPTION_MAX, EMOJI_MAX, Holding, NAME_MAX, Place};
 use crate::domain::npcs::CAST;
-use crate::services::mcguffins::{Draft, Given, McguffinView, Saved, Taken};
+use crate::services::balls::random_below;
+use crate::services::guild::{Channel, ChannelKind};
+use crate::services::mcguffins::{Draft, Given, McguffinView, Placed, Placing, Saved, Taken};
+use crate::services::worlds::roleplay;
 use crate::store::characters::CharacterRow;
 
 /// The `back` value that sends a form back to the character's sheet; anything else, to the McGuffin.
 pub(super) const BACK_CHARACTER: &str = "character";
 const RETIRE: &str = "retire";
+// The place form's choices, as posted.
+const NOWHERE: &str = "nowhere";
+const WORLD: &str = "world";
+const CHANNEL: &str = "channel";
+const RANDOM: &str = "random";
 const GONE: &str = "That McGuffin is gone.";
 
 /// Where a give or take sends staff back to.
@@ -41,6 +54,39 @@ impl Back {
             Self::Character => format!("/characters/{character}"),
             Self::Mcguffin => format!("/mcguffins/{mcguffin}"),
         }
+    }
+}
+
+/// Where it lies, for a page: named from the server's channels now; a channel since deleted says so.
+fn where_shown(place: Option<Place>, channels: &[Channel]) -> String {
+    let named = |id: u64| channels.iter().find(|c| c.id == id).map(|c| esc(&c.name));
+    let gone = |id: u64| format!("<span class=\"bad\">a channel the server no longer has ({id})</span>");
+    match place {
+        None => "<span class=\"dim\">nowhere</span>".to_owned(),
+        Some(Place::World(id)) => named(id).map_or_else(|| gone(id), |n| format!("🌍 world <b>{n}</b>")),
+        Some(Place::Channel(id)) => named(id).map_or_else(|| gone(id), |n| format!("#{n}")),
+        Some(Place::Random(id)) => named(id).map_or_else(|| gone(id), |n| format!("🎲 #{n}, rolled")),
+    }
+}
+
+/// Where it lies, in plain words for a notice: "in world Earth", "at random in #ruins".
+fn where_named(place: Option<Place>, channels: &[Channel]) -> String {
+    let named = |id: u64| channels.iter().find(|c| c.id == id).map_or_else(|| id.to_string(), |c| c.name.clone());
+    match place {
+        None => "nowhere".to_owned(),
+        Some(Place::World(id)) => format!("in world {}", named(id)),
+        Some(Place::Channel(id)) => format!("in #{}", named(id)),
+        Some(Place::Random(id)) => format!("at random in #{}", named(id)),
+    }
+}
+
+/// Where it lies, for a mod log line.
+fn where_logged(place: Option<Place>) -> String {
+    match place {
+        None => "nowhere".to_owned(),
+        Some(Place::World(id)) => format!("in world <#{id}>"),
+        Some(Place::Channel(id)) => format!("in <#{id}>"),
+        Some(Place::Random(id)) => format!("at random in <#{id}>"),
     }
 }
 
@@ -92,6 +138,7 @@ pub(super) async fn list(State(web): State<Web>, Path(token): Path<String>) -> P
         return Ok(expired());
     };
     let all = web.services.mcguffins().all()?;
+    let channels = if all.iter().any(|m| m.place.is_some()) { web.guild.channels().await } else { Vec::new() };
     let t = esc(&session.token);
     let rows: String = all
         .iter()
@@ -99,11 +146,12 @@ pub(super) async fn list(State(web): State<Web>, Path(token): Path<String>) -> P
             let holders: Vec<_> = m.holders.iter().map(|(id, name, _)| format!("<a href=\"/a/{t}/characters/{id}\">{}</a>", esc(name))).collect();
             let state = if m.retired { "<span class=\"tag\">retired</span>" } else { "" };
             format!(
-                "<tr><td>{} <a href=\"/a/{t}/mcguffins/{}\">{}</a> {state}</td><td>{}</td><td>{}</td></tr>",
+                "<tr><td>{} <a href=\"/a/{t}/mcguffins/{}\">{}</a> {state}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
                 esc(&m.emoji),
                 m.id,
                 esc(&m.name),
                 esc(m.holding.label()),
+                where_shown(m.place, &channels),
                 if holders.is_empty() { "<span class=\"dim\">nobody</span>".to_owned() } else { holders.join(", ") }
             )
         })
@@ -111,7 +159,7 @@ pub(super) async fn list(State(web): State<Web>, Path(token): Path<String>) -> P
     let table = if all.is_empty() {
         "<p class=\"dim\">No McGuffins yet. Make the first below.</p>".to_owned()
     } else {
-        format!("<div class=\"scroll\"><table><thead><tr><th>McGuffin</th><th>Held by</th><th>Holders</th></tr></thead><tbody>{rows}</tbody></table></div>")
+        format!("<div class=\"scroll\"><table><thead><tr><th>McGuffin</th><th>Held by</th><th>Lies</th><th>Holders</th></tr></thead><tbody>{rows}</tbody></table></div>")
     };
     let body = format!(
         "<header><h1>McGuffins</h1><p class=\"dim\">Plot items. Retiring hides one; nothing deletes it.</p></header>\
@@ -195,6 +243,7 @@ pub(super) async fn show(State(web): State<Web>, Path((token, id)): Path<(String
         }
     };
     let (verb, label) = if m.retired { ("restore", "Restore: back in play") } else { (RETIRE, "Retire: hide it from cards") };
+    let place = place_card(&t, &m, &web.guild.channels().await, &web.services.worlds().all()?);
 
     let body = format!(
         "<header><p><a href=\"/a/{t}/mcguffins\">← McGuffins</a></p><h1>{} {}</h1><p class=\"dim\">{}{}</p></header>\
@@ -202,7 +251,7 @@ pub(super) async fn show(State(web): State<Web>, Path((token, id)): Path<(String
          <div><button type=\"submit\">Save</button></div></form></section>\
          <section class=\"card\"><h2>Holders</h2>{holders}{give}\
          <form method=\"post\" action=\"/a/{t}/mcguffins/{id}/retire\"><input type=\"hidden\" name=\"state\" value=\"{verb}\">\
-         <button class=\"quiet\" type=\"submit\">{label}</button></form></section></div>",
+         <button class=\"quiet\" type=\"submit\">{label}</button></form></section></div>{place}",
         esc(&m.emoji),
         esc(&m.name),
         esc(m.holding.label()),
@@ -211,6 +260,106 @@ pub(super) async fn show(State(web): State<Web>, Path((token, id)): Path<(String
     );
     let told = web.told(&session);
     Ok(Html(html::page(&session.token, Section::Mcguffins, &m.name, told.as_ref(), &body)).into_response())
+}
+
+// Where it lies, and the form that moves it: built from the server's channels and worlds now.
+fn place_card(t: &str, m: &McguffinView, channels: &[Channel], worlds: &[u64]) -> String {
+    let id = m.id;
+    let world_choices: Vec<(String, String)> = channels
+        .iter()
+        .filter(|c| c.kind == ChannelKind::Category && worlds.contains(&c.id))
+        .map(|c| (c.id.to_string(), c.name.clone()))
+        .collect();
+    let pool = roleplay(worlds, channels).len();
+    let current_world = match m.place {
+        Some(Place::World(w)) => w.to_string(),
+        _ => String::new(),
+    };
+    let current_channel = match m.place {
+        Some(Place::Channel(c)) => Some(c),
+        _ => None,
+    };
+    let mode = m.place.map_or(WORLD, |p| p.key());
+    let modes = [
+        (WORLD, "In a world: somewhere in a category".to_owned()),
+        (CHANNEL, "In one channel".to_owned()),
+        (RANDOM, format!("At random: one of the {pool} roleplay channels")),
+        (NOWHERE, "Nowhere".to_owned()),
+    ];
+    let modes: Vec<(String, String)> = modes.into_iter().map(|(k, l)| (k.to_owned(), l)).collect();
+    let worlds_note = if world_choices.is_empty() {
+        format!("<p class=\"notice bad\">No worlds yet: tick them on the <a href=\"/a/{t}/worlds\">Worlds</a> page.</p>")
+    } else {
+        String::new()
+    };
+    let reroll = if matches!(m.place, Some(Place::Random(_))) {
+        format!(
+            "<form method=\"post\" action=\"/a/{t}/mcguffins/{id}/place\"><input type=\"hidden\" name=\"mode\" value=\"{RANDOM}\">\
+             <button class=\"quiet\" type=\"submit\">🎲 Re-roll</button></form>"
+        )
+    } else {
+        String::new()
+    };
+    let listing = if channels.is_empty() { "<p class=\"notice bad\">Discord did not list the server's channels. Reload in a moment.</p>" } else { "" };
+    format!(
+        "<section class=\"card\"><h2>Where it lies</h2><p>{}</p>{listing}{worlds_note}\
+         <form method=\"post\" action=\"/a/{t}/mcguffins/{id}/place\" class=\"grid\">\
+         <label>Where<select name=\"mode\">{}</select></label>\
+         <label>World, for “in a world”<select name=\"world\"><option value=\"\">Pick a world</option>{}</select></label>\
+         <label>Channel, for “in one channel”<select name=\"channel\">{}</select></label>\
+         <div><button type=\"submit\">Save place</button></div></form>{reroll}\
+         <p class=\"dim small\">Read from the server's channels now. Given to a character, a one-holder McGuffin leaves its place.</p></section>",
+        where_shown(m.place, channels),
+        options(&modes, mode),
+        options(&world_choices, &current_world),
+        channel_options(channels, current_channel),
+    )
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+pub(super) struct PlaceInput {
+    mode: String,
+    world: String,
+    channel: String,
+}
+
+pub(super) async fn place(State(web): State<Web>, Path((token, id)): Path<(String, i64)>, Form(input): Form<PlaceInput>) -> Page {
+    let Some(session) = web.staff(&token) else {
+        return Ok(expired());
+    };
+    let path = format!("/mcguffins/{id}");
+    if !web.logged()? {
+        return Ok(web.back(&session, &path, refused(NO_MOD_LOG)));
+    }
+    let picked = |text: &str| text.trim().parse::<u64>().unwrap_or_default();
+    let placing = match input.mode.as_str() {
+        NOWHERE => Placing::Nowhere,
+        WORLD => Placing::World(picked(&input.world)),
+        CHANNEL => Placing::Channel(picked(&input.channel)),
+        RANDOM => Placing::Random,
+        _ => return Ok(web.back(&session, &path, refused("Pick where it lies."))),
+    };
+    let channels = web.guild.channels().await;
+    if channels.is_empty() && placing != Placing::Nowhere {
+        return Ok(web.back(&session, &path, refused("Discord did not list the server's channels; nothing changed. Try again in a moment.")));
+    }
+    let Some(m) = web.services.mcguffins().get(id)? else {
+        return Ok(web.back(&session, "/mcguffins", refused(GONE)));
+    };
+    let worlds = web.services.worlds().all()?;
+    let notice = match web.services.mcguffins().place(id, placing, &channels, &worlds, random_below)? {
+        Placed::Done { before, after, pool } => {
+            let rolled = if pool > 0 { format!(" (of {pool} roleplay channels)") } else { String::new() };
+            web.audit(&format!("🔮 <@{}> put McGuffin **{}** {}{rolled} (was {})", session.staff, plain(&m.name), where_logged(after), where_logged(before)));
+            done(format!("{} now lies {}.", m.name, where_named(after, &channels)))
+        }
+        Placed::NotFound => return Ok(web.back(&session, "/mcguffins", refused(GONE))),
+        Placed::NotAWorld => refused("Pick a world: a category ticked on the Worlds page, that the server still has."),
+        Placed::NotAChannel => refused("Pick a text channel the server has."),
+        Placed::NoRoleplay => refused("No world has a text channel to roll from. Tick worlds first."),
+    };
+    Ok(web.back(&session, &path, notice))
 }
 
 pub(super) async fn edit(State(web): State<Web>, Path((token, id)): Path<(String, i64)>, Form(input): Form<DraftInput>) -> Page {
@@ -241,9 +390,10 @@ pub(super) fn give_to(web: &Web, session: &Session, mcguffin: i64, character: i6
         return Ok(web.back(session, &path, refused("Pick a McGuffin and a character.")));
     };
     let notice = match web.services.mcguffins().give(mcguffin, character, session.staff)? {
-        Given::Done { moved_from } => {
+        Given::Done { moved_from, left } => {
             let from = moved_from.as_deref().map(|f| format!(", from **{}**", plain(f))).unwrap_or_default();
-            web.audit(&format!("🔮 <@{}> gave **{}** to **{}** ({}){from}", session.staff, plain(&m.name), plain(&c.name), owner(c.player_id)));
+            let lay = left.map(|p| format!("; it no longer lies {}", where_logged(Some(p)))).unwrap_or_default();
+            web.audit(&format!("🔮 <@{}> gave **{}** to **{}** ({}){from}{lay}", session.staff, plain(&m.name), plain(&c.name), owner(c.player_id)));
             done(format!("{} now holds {}.", c.name, m.name))
         }
         Given::NotFound => refused(GONE),

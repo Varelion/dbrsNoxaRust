@@ -5,7 +5,7 @@
 //!   /z_moderator_sp action:grant role amount memo             everyone holding the role
 //!   /z_moderator_sp action:history player                     the last lines of their ledger
 //!
-//! A player's own balance and lines are on their /me page.
+//! A player's own balance and lines are on their /mypage page.
 //! ```
 //!
 //! Every change waits for the mod log and lands there.

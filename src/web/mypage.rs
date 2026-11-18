@@ -1,4 +1,4 @@
-//! A player's own page, from /me: what /panel, /set and /wallet did in Discord.
+//! A player's own page, from /mypage: what /panel, /set and /wallet did in Discord.
 //!
 //! ```text
 //!   ┌ 🐉 Raging Spirit   My characters  Players ───────────────────────────┐
@@ -29,7 +29,7 @@ use crate::services::links::Access;
 const WALLET_LINES: usize = 10;
 const NOT_YOURS: &str = "Pick one of your own characters.";
 
-/// A player on a live /me link.
+/// A player on a live /mypage link.
 struct Me {
     token: String,
     player: u64,

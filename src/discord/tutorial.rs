@@ -1,7 +1,7 @@
 //! /tutorial [guide]: how to use noxaDBRS, step by step, only to the caller. No story, just how.
 //!
 //! ```text
-//!   /tutorial                 the players' guide: /me, picking who you play, /profile, Spirit Points
+//!   /tutorial                 the players' guide: /mypage, picking who you play, /profile, Spirit Points
 //!   /tutorial guide:staff     staff only: the mod log, the admin pages, the staff commands
 //! ```
 //!
@@ -64,11 +64,11 @@ fn players() -> Vec<Embed> {
         .color(ACCENT)
         .description("Everything you need is on your page. Discord keeps one more command: /profile, to show a card in a channel.")
         .field(section(
-            "1. Open your page: /me",
+            "1. Open your page: /mypage",
             &lines(&[
-                "• Type `/me`. The bot DMs you a link.",
+                "• Type `/mypage`. The bot DMs you a link.",
                 "• DMs closed? The link shows here instead, only to you.",
-                "• It works until 30 minutes pass without use, 4 hours at most. Run `/me` again for a new one; the old one stops.",
+                "• It works until 30 minutes pass without use, 4 hours at most. Run `/mypage` again for a new one; the old one stops.",
                 "• Never share it: it opens your page without a password.",
             ]),
         ))
@@ -118,7 +118,7 @@ fn staff() -> Vec<Embed> {
             "2. Open the admin pages: /z_moderator_admin",
             &lines(&[
                 "• The bot DMs you a link: 30 minutes without use, 4 hours at most. A new one replaces the old.",
-                "• Never share it. A player's /me link never opens these pages.",
+                "• Never share it. A player's /mypage link never opens these pages.",
             ]),
         ))
         .field(section(
@@ -144,9 +144,10 @@ fn staff() -> Vec<Embed> {
             ],
         ))
         .field(section(
-            "5. McGuffins and Dragon Balls",
+            "5. Worlds, McGuffins and Dragon Balls",
             &lines(&[
-                "• **Make a McGuffin**: name, emoji, held by one or many, what it is. Give, take back, **Retire**, **Restore**. Given to someone new, a one-holder McGuffin moves.",
+                "• **Worlds**: tick each category that is a world; its text channels are the roleplay channels.",
+                "• **Make a McGuffin**: name, emoji, one holder or many, what it is. **Where it lies**: a world, one channel, or at random among the roleplay channels (**Re-roll**). Give, take back, **Retire**, **Restore**. Given, a one-holder McGuffin leaves its place.",
                 "• **Dragon Balls**, per set: **Roll needed** (1 to 100); **Search areas**: tick a category (all its text channels) or single channels; **Hide here** per ball; **Scatter** every loose ball over the areas. A held ball stays held.",
             ]),
         ))

@@ -68,15 +68,17 @@ pub(super) enum Section {
     Npcs,
     Mcguffins,
     Balls,
+    Worlds,
 }
 
-const SECTIONS: [(Section, &str, &str); 6] = [
+const SECTIONS: [(Section, &str, &str); 7] = [
     (Section::Home, "", "Home"),
     (Section::Players, "/players", "Players"),
     (Section::Characters, "/characters", "Characters"),
     (Section::Npcs, "/npcs", "NPCs"),
     (Section::Mcguffins, "/mcguffins", "McGuffins"),
     (Section::Balls, "/balls", "Dragon Balls"),
+    (Section::Worlds, "/worlds", "Worlds"),
 ];
 
 /// HTML-escaped: safe inside text and quoted attributes.
@@ -204,7 +206,7 @@ const MINE: [(Mine, &str, &str); 2] = [(Mine::Me, "", "My characters"), (Mine::P
 /// A player's page: their menu, what the last form did, the page, the footer.
 pub(super) fn player_page(token: &str, section: Mine, title: &str, told: Option<&Notice>, body: &str) -> String {
     let top = bar(&format!("/p/{}", esc(token)), "", &MINE, &section);
-    shell(title, &top, &format!("{}{body}", notice(told)), &foot("/me"))
+    shell(title, &top, &format!("{}{body}", notice(told)), &foot("/mypage"))
 }
 
 fn bare(title: &str, body: &str) -> String {
@@ -215,7 +217,7 @@ fn bare(title: &str, body: &str) -> String {
 pub(super) fn expired() -> String {
     bare(
         "Link expired",
-        "<h1>This link has expired</h1><p>Ask for a new one in Discord: <code>/me</code>, or <code>/z_moderator_admin</code> for staff. It comes by DM.</p>",
+        "<h1>This link has expired</h1><p>Ask for a new one in Discord: <code>/mypage</code>, or <code>/z_moderator_admin</code> for staff. It comes by DM.</p>",
     )
 }
 
@@ -234,6 +236,7 @@ pub(super) struct Counts<'a> {
     pub(super) characters: usize,
     pub(super) cast: usize,
     pub(super) mcguffins: usize,
+    pub(super) worlds: usize,
     pub(super) sets: &'a [SetView],
 }
 
@@ -245,6 +248,7 @@ pub(super) fn home(token: &str, told: Option<&Notice>, counts: &Counts, mod_log:
         tile("/characters", counts.characters, "characters"),
         tile("/npcs", counts.cast, "NPCs"),
         tile("/mcguffins", counts.mcguffins, "McGuffins in play"),
+        tile("/worlds", counts.worlds, "worlds"),
     ]
     .concat();
 

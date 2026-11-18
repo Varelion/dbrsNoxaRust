@@ -8,9 +8,11 @@
 //!   /z_moderator_sp        action:give|take|set|grant|history
 //!   /z_moderator_character action:add
 //!   /z_moderator_feat      action:add|edit|link|unlink|archive|restore|list
-//!   /me                                      a player's own page, a link by DM: characters, SP
+//!   /mypage                                      a player's own page, a link by DM: characters, SP
 //!   /profile                                 a character's card, in the channel
 //!   /tutorial [guide:players|staff]          how to use the bot, only to the caller
+//!   /help [topic]                            a guide, or any command's page
+//!   .prune <count>                           a message, not a slash command (dot.rs)
 //!   Log feat                                 right-click a post › Apps
 //! ```
 
@@ -22,6 +24,7 @@ use super::characters::CharacterSub;
 use super::ctx::ACTION;
 use super::feats::{FeatSub, FormField};
 use super::settings::SettingsSub;
+use super::help::TOPIC;
 use super::tutorial::{GUIDE, Guide};
 use crate::domain::feats::{FeatCounts, FeatKind, FeatState, NOTE_MAX, REASON_MAX};
 use crate::domain::spirit::{MEMO_MAX, SP_MAX, SpAction};
@@ -32,15 +35,16 @@ pub(crate) const DBRS: &str = "z_moderator_dbrs";
 pub(crate) const SP: &str = "z_moderator_sp";
 pub(crate) const CHARACTER: &str = "z_moderator_character";
 pub(crate) const PROFILE: &str = "profile";
-pub(crate) const ME: &str = "me";
+pub(crate) const MYPAGE: &str = "mypage";
 pub(crate) const TUTORIAL: &str = "tutorial";
+pub(crate) const HELP: &str = "help";
 pub(crate) const FEAT: &str = "z_moderator_feat";
 pub(crate) const LOG_FEAT: &str = "Log feat";
 
 pub(crate) const HISTORY: &str = "history";
 
 pub(crate) fn all() -> Vec<Command> {
-    vec![admin(), dbrs(), sp(), character(), me(), profile(), tutorial(), feat(), log_feat()]
+    vec![admin(), dbrs(), sp(), character(), mypage(), profile(), tutorial(), help(), feat(), log_feat()]
 }
 
 // The verb, picked from a list: (shown, value) pairs.
@@ -60,8 +64,8 @@ fn dbrs() -> Command {
         .build()
 }
 
-fn me() -> Command {
-    CommandBuilder::new(ME, "Your page: characters, who you play, Spirit Points; a link by DM", CommandType::ChatInput).build()
+fn mypage() -> Command {
+    CommandBuilder::new(MYPAGE, "Your page: characters, who you play, Spirit Points; a link by DM", CommandType::ChatInput).build()
 }
 
 fn sp() -> Command {
@@ -94,6 +98,12 @@ fn character() -> Command {
 fn tutorial() -> Command {
     CommandBuilder::new(TUTORIAL, "How to use the bot, step by step, only to you", CommandType::ChatInput)
         .option(StringBuilder::new(GUIDE, "Which guide; players when left out").choices(Guide::ALL.iter().map(|g| (g.label(), g.key()))))
+        .build()
+}
+
+fn help() -> Command {
+    CommandBuilder::new(HELP, "A guide, or any command's page: what it does and how to type it", CommandType::ChatInput)
+        .option(StringBuilder::new(TOPIC, "A guide or a command: start, cards, /profile …; the list when left out").autocomplete(true))
         .build()
 }
 

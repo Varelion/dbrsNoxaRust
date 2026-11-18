@@ -13,7 +13,8 @@
 //!   POST /a/<token>/characters/<id>[/picture|feats|mcguffins]  save, upload a picture, log a feat, give
 //!   GET  /a/<token>/npcs     POST /a/<token>/npcs  the cast, add an NPC
 //!   POST /a/<token>/feats/<id>/archive|restore
-//!   GET  /a/<token>/mcguffins[/<id>]               POST …/give|take|retire, create, edit
+//!   GET  /a/<token>/mcguffins[/<id>]               POST …/place|give|take|retire, create, edit
+//!   GET  /a/<token>/worlds   POST /a/<token>/worlds  which categories are worlds
 //!   GET  /a/<token>/balls[/<set>]                  POST …/need|areas|place|scatter
 //!   GET  /healthz                                  "ok"
 //! ```
@@ -25,10 +26,11 @@
 mod balls;
 mod html;
 mod mcguffins;
-mod me;
+mod mypage;
 mod players;
 pub(crate) mod relay;
 mod sheets;
+mod worlds;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -169,16 +171,18 @@ pub(crate) fn routes(services: Arc<Services>, guild: Guild) -> Router {
         .route("/a/{token}/mcguffins/{id}/give", post(mcguffins::give))
         .route("/a/{token}/mcguffins/{id}/take", post(mcguffins::take))
         .route("/a/{token}/mcguffins/{id}/retire", post(mcguffins::retire))
+        .route("/a/{token}/mcguffins/{id}/place", post(mcguffins::place))
+        .route("/a/{token}/worlds", get(worlds::show).post(worlds::save))
         .route("/a/{token}/balls", get(balls::list))
         .route("/a/{token}/balls/{set}", get(balls::show))
         .route("/a/{token}/balls/{set}/need", post(balls::need))
         .route("/a/{token}/balls/{set}/areas", post(balls::areas))
         .route("/a/{token}/balls/{set}/place", post(balls::place))
         .route("/a/{token}/balls/{set}/scatter", post(balls::scatter))
-        .route("/p/{token}", get(me::home))
-        .route("/p/{token}/play", post(me::play))
-        .route("/p/{token}/players", get(me::players))
-        .route("/p/{token}/players/{player}", get(me::player))
+        .route("/p/{token}", get(mypage::home))
+        .route("/p/{token}/play", post(mypage::play))
+        .route("/p/{token}/players", get(mypage::players))
+        .route("/p/{token}/players/{player}", get(mypage::player))
         .layer(axum::middleware::map_response(secured))
         .with_state(Web { services, guild })
 }
@@ -219,7 +223,8 @@ async fn home(State(web): State<Web>, Path(token): Path<String>) -> Page {
         }
         None => html::ModLog::Unset,
     };
-    let counts = html::Counts { players: players.len(), characters: sheets.len() - cast, cast, mcguffins: in_play, sets: &sets };
+    let worlds = services.worlds().all()?.len();
+    let counts = html::Counts { players: players.len(), characters: sheets.len() - cast, cast, mcguffins: in_play, worlds, sets: &sets };
     let told = web.told(&session);
     Ok(Html(html::home(&session.token, told.as_ref(), &counts, &mod_log)).into_response())
 }

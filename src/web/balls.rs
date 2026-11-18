@@ -55,8 +55,8 @@ pub(super) async fn list(State(web): State<Web>, Path(token): Path<String>) -> P
     Ok(Html(html::page(&session.token, Section::Balls, "Dragon Balls", told.as_ref(), &body)).into_response())
 }
 
-// Text channels grouped under their categories, as `<optgroup>`s; the one picked selected.
-fn channel_options(channels: &[Channel], picked: Option<u64>) -> String {
+/// Text channels grouped under their categories, as `<optgroup>`s; the one picked selected.
+pub(super) fn channel_options(channels: &[Channel], picked: Option<u64>) -> String {
     let option = |c: &Channel| {
         let selected = if Some(c.id) == picked { " selected" } else { "" };
         format!("<option value=\"{}\"{selected}>#{}</option>", c.id, esc(&c.name))

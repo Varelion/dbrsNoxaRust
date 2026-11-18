@@ -4,13 +4,15 @@
 //! ```text
 //!   gateway ─► run() ─┬─ GuildCreate / Role*  ─► App::observe       role names, for the staff check
 //!                     ├─ Ready, Resumed, Gateway* ─► logged          connection health
+//!                     ├─ MessageCreate ".…"   ─► dot::handle: .prune (needs the Message Content intent)
 //!                     └─ InteractionCreate    ─► interactions::handle (one task each, watched for panics)
-//!                                                   ├─ weblinks   /z_moderator_admin, /me: web links, by DM
+//!                                                   ├─ weblinks   /z_moderator_admin, /mypage: web links, by DM
 //!                                                   ├─ settings   /z_moderator_dbrs
 //!                                                   ├─ spirit     /z_moderator_sp
 //!                                                   ├─ characters /z_moderator_character
 //!                                                   ├─ profile    /profile: a card, in the channel
 //!                                                   ├─ tutorial   /tutorial: how to use the bot
+//!                                                   ├─ help       /help: guides and every command's page
 //!                                                   └─ feats      /z_moderator_feat, Log feat
 //!
 //!   web's asks ─► guild::answer ─► names, channels, picture uploads and links, mod log lines
@@ -20,8 +22,10 @@ mod app;
 mod characters;
 mod commands;
 mod ctx;
+mod dot;
 mod feats;
 mod guild;
+mod help;
 mod interactions;
 mod modlog;
 mod profile;
@@ -43,15 +47,21 @@ use twilight_gateway::{Event, EventTypeFlags, Intents, Shard, ShardId, StreamExt
 use twilight_http::Client;
 use twilight_http::error::ErrorType;
 use twilight_model::application::interaction::Interaction;
+use twilight_model::channel::Message;
+use twilight_model::oauth::ApplicationFlags;
 
 use crate::config::Config;
 use crate::services::Services;
 use crate::services::guild::Ask;
 use crate::telemetry::{self, Counter};
-use app::{App, Places};
+use app::{App, Places, Reading};
 
-// Guilds alone brings the server's roles and every interaction; nothing privileged yet.
+// Guilds alone brings the server's roles and every interaction. Message text is privileged: asked for
+// only when the Developer Portal allows it, or Discord would close the gateway for good.
 const INTENTS: Intents = Intents::GUILDS;
+const READING: Intents = Intents::GUILD_MESSAGES.union(Intents::MESSAGE_CONTENT);
+const CONTENT_ALLOWED: ApplicationFlags = ApplicationFlags::GATEWAY_MESSAGE_CONTENT.union(ApplicationFlags::GATEWAY_MESSAGE_CONTENT_LIMITED);
+const DOT: char = '.';
 
 // Only these are decoded; every other event is dropped before it costs memory. Closes always arrive.
 const EVENTS: EventTypeFlags = EventTypeFlags::READY
@@ -62,7 +72,8 @@ const EVENTS: EventTypeFlags = EventTypeFlags::READY
     .union(EventTypeFlags::ROLE_CREATE)
     .union(EventTypeFlags::ROLE_UPDATE)
     .union(EventTypeFlags::ROLE_DELETE)
-    .union(EventTypeFlags::INTERACTION_CREATE);
+    .union(EventTypeFlags::INTERACTION_CREATE)
+    .union(EventTypeFlags::MESSAGE_CREATE);
 
 // Start-up calls retry with a growing wait: at boot the network or Discord may not answer yet.
 const RETRY_FIRST: Duration = Duration::from_secs(5);
@@ -101,7 +112,15 @@ where
 pub(crate) async fn run(config: Config, services: Arc<Services>, asks: UnboundedReceiver<Ask>) -> Result<()> {
     let http = Client::new(config.token.clone());
     let app = retried("reading the application", || http.current_user_application().into_future()).await?;
-    let app_id = app.model().await.context("reading the application")?.id;
+    let application = app.model().await.context("reading the application")?;
+    let app_id = application.id;
+    let reading = if application.flags.is_some_and(|flags| flags.intersects(CONTENT_ALLOWED)) {
+        info!("Message Content intent allowed: dot commands (.prune) are on");
+        Reading::Messages
+    } else {
+        warn!("Message Content intent off in the Developer Portal: dot commands (.prune) are off until it is enabled and the bot restarts");
+        Reading::CommandsOnly
+    };
 
     let commands = commands::all();
     let interactions = http.interaction(app_id);
@@ -112,10 +131,11 @@ pub(crate) async fn run(config: Config, services: Arc<Services>, asks: Unbounded
     let mut terminate = signal(SignalKind::terminate()).context("listening for SIGTERM")?;
 
     let places = Places { web_url: config.web_url.clone(), pictures: config.pictures };
-    let app = Arc::new(App::new(http, app_id, config.guild_id, services, places));
+    let app = Arc::new(App::new(http, app_id, config.guild_id, services, places, reading));
     tokio::spawn(telemetry::health(Arc::clone(&app.stats)));
     tokio::spawn(guild::answer(Arc::clone(&app), asks));
-    let mut shard = Shard::new(ShardId::ONE, config.token, INTENTS);
+    let intents = if reading == Reading::Messages { INTENTS | READING } else { INTENTS };
+    let mut shard = Shard::new(ShardId::ONE, config.token, intents);
 
     loop {
         let item = tokio::select! {
@@ -144,8 +164,11 @@ pub(crate) async fn run(config: Config, services: Arc<Services>, asks: Unbounded
 
         connection(&app, &event);
         app.observe(&event);
-        if let Event::InteractionCreate(create) = event {
-            spawn_interaction(&app, create.0);
+        match event {
+            Event::InteractionCreate(create) => spawn_interaction(&app, create.0),
+            // Most messages are roleplay: only one that starts with a dot costs a task.
+            Event::MessageCreate(create) if create.content.starts_with(DOT) => spawn_dot(&app, create.message),
+            _ => {}
         }
     }
 }
@@ -169,6 +192,20 @@ fn connection(app: &App, event: &Event) {
         }
         _ => {}
     }
+}
+
+// A dot command in its own task and span; a failure is logged with its causes.
+fn spawn_dot(app: &Arc<App>, message: Message) {
+    let span = tracing::info_span!("message", id = message.id.get(), channel = message.channel_id.get(), user = message.author.id.get());
+    let app = Arc::clone(app);
+    tokio::spawn(
+        async move {
+            if let Err(source) = dot::handle(app, message).await {
+                error!(error = ?source, "dot command failed");
+            }
+        }
+        .instrument(span),
+    );
 }
 
 // One task per interaction, inside its span. A second task waits on it: a panic is counted and the

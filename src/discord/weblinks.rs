@@ -1,8 +1,8 @@
-//! The web links, sent by DM: /z_moderator_admin for the admin pages, /me for a player's own page.
+//! The web links, sent by DM: /z_moderator_admin for the admin pages, /mypage for a player's own page.
 //!
 //! ```text
 //!   /z_moderator_admin ─ staff? ─► issue(staff, Staff)   ─► DM "<https://dbrs.neokai.org/a/<token>>"
-//!   /me                ────────► issue(player, Player) ─► DM "<https://dbrs.neokai.org/p/<token>>"
+//!   /mypage                ────────► issue(player, Player) ─► DM "<https://dbrs.neokai.org/p/<token>>"
 //!                                   └─ DMs closed ─► the link, only to them, here
 //! ```
 //!
@@ -30,7 +30,7 @@ pub(crate) async fn admin(ctx: &Ctx<'_>) -> Result<()> {
     deliver(ctx, staff, Access::Staff, "🛠️ **Raging Spirit admin:**").await
 }
 
-pub(crate) async fn me(ctx: &Ctx<'_>) -> Result<()> {
+pub(crate) async fn mypage(ctx: &Ctx<'_>) -> Result<()> {
     let Some(player) = ctx.user_id() else {
         return Ok(());
     };

@@ -24,23 +24,26 @@ One command per thing; staff pick the verb from its `action` list.
 | `/z_moderator_character action:add` | staff | An approved character into a player's slot |
 | `/z_moderator_feat action:add\|edit\|link\|unlink\|archive\|restore\|list` | staff | Silent feats, linked to posts; archived, never deleted |
 | Right-click a post › Apps › Log feat | staff | A feat from a post, its author's character prefilled |
-| `/me` | everyone | Your page, a link by DM: your characters, who you play, your Spirit Points, everyone's cards |
+| `/mypage` | everyone | Your page, a link by DM: your characters, who you play, your Spirit Points, everyone's cards |
 | `/profile` | everyone | A character's card, posted in the channel |
 | `/tutorial [guide:players\|staff]` | everyone (staff guide: staff) | How to use the bot, step by step, only to the caller |
+| `/help [topic]` | everyone (staff pages: staff) | A guide, or any command's page, read from its registration: `/help /z_moderator_sp give` |
+| `.prune <count>` | staff | Typed as a message: deletes the last 1 to 100 messages (not those over 14 days old). Needs the Message Content intent |
 
 ## Web pages
 
-`/z_moderator_admin` DMs a link to `https://dbrs.neokai.org/a/<token>`, `/me` one to `/p/<token>`. No scripts, no
+`/z_moderator_admin` DMs a link to `https://dbrs.neokai.org/a/<token>`, `/mypage` one to `/p/<token>`. No scripts, no
 cookies: the token is the login, and a player's link never opens the admin pages. A new link replaces the old one.
 
 | Page | Manages |
 |---|---|
 | Players | everyone with Spirit Points or a character; give/take/set SP, the ledger, add characters |
 | Characters, NPCs | every sheet: name, prefix, race, tier, title, bio, notes, picture (link or upload); McGuffins held; feats |
-| McGuffins | make, edit, give, take back, retire, restore |
+| McGuffins | make, edit, give, take back, retire, restore; where it lies: a world, one channel, or rolled among the roleplay channels |
+| Worlds | which categories are worlds; their text channels are the roleplay channels |
 | Dragon Balls | search areas (categories, channels), the roll, where each ball hides, scatter |
 
-| Player page (`/me`) | your characters as cards, who you play (one press), your Spirit Points and ledger, everyone else's cards |
+| Player page (`/mypage`) | your characters as cards, who you play (one press), your Spirit Points and ledger, everyone else's cards |
 
 An uploaded picture is posted to `PICTURES_CHANNEL` with the image attached; its link expires, so the
 bot fetches a fresh one from that message when needed. The bot needs View Channel, Send Messages,
@@ -70,7 +73,8 @@ cp .env.example .env    # fill in DISCORD_TOKEN
 cargo run --release
 ```
 
-Discord Developer Portal › Bot: enable the **Server Members** intent (`/z_moderator_sp grant` lists a role's holders;
+Discord Developer Portal › Bot: enable the **Message Content** intent for `.prune` (the bot checks at start and
+logs whether dot commands are on; without it, it never asks Discord for it, so it cannot be locked out), and the **Server Members** intent (`/z_moderator_sp grant` lists a role's holders;
 the admin pages list members' names, else look them up one by one).
 
 The relay: `neoKai/relay-dbrs` (`npx wrangler deploy -c relay-dbrs/wrangler.jsonc`), its `RELAY_SECRET` the same as the bot's.

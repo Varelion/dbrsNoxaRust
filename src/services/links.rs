@@ -3,7 +3,7 @@
 //!
 //! ```text
 //!   /z_moderator_admin   ─► issue(staff, Staff)   ─► DM: https://…/a/<token>   128 random bits
-//!   /me                  ─► issue(player, Player) ─► DM: https://…/p/<token>
+//!   /mypage                  ─► issue(player, Player) ─► DM: https://…/p/<token>
 //!   every page and form  ─► open(token, kind)     ─► their id, or None: expired (30 idle minutes,
 //!                                                    4 hours), replaced, or the other kind of link
 //!   a form's outcome     ─► tell(token)  ─► told(token) on the page it redirects to, once

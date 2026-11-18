@@ -9,7 +9,7 @@ use twilight_model::application::interaction::{Interaction, InteractionData, Int
 
 use super::app::App;
 use super::ctx::{Ctx, Options};
-use super::{characters, commands, feats, profile, settings, spirit, tutorial, weblinks};
+use super::{characters, commands, feats, help, profile, settings, spirit, tutorial, weblinks};
 use crate::telemetry::{Counter, reference_of};
 
 /// What a caller reads when their command failed; the reference finds it in the journal.
@@ -74,6 +74,7 @@ async fn route(ctx: &Ctx<'_>, inter: &Interaction) -> Result<()> {
             let opts = Options::of(data);
             match data.name.as_str() {
                 commands::PROFILE => profile::complete(ctx, &opts).await,
+                commands::HELP => help::complete(ctx, &opts).await,
                 commands::FEAT => feats::complete(ctx, &opts).await,
                 other => {
                     warn!(command = other, "autocomplete for a command without menus");
@@ -85,8 +86,9 @@ async fn route(ctx: &Ctx<'_>, inter: &Interaction) -> Result<()> {
             let opts = Options::of(data);
             match data.name.as_str() {
                 commands::ADMIN => weblinks::admin(ctx).await,
-                commands::ME => weblinks::me(ctx).await,
+                commands::MYPAGE => weblinks::mypage(ctx).await,
                 commands::TUTORIAL => tutorial::show(ctx, &opts).await,
+                commands::HELP => help::show(ctx, &opts).await,
                 commands::DBRS => settings::admin(ctx, &opts).await,
                 commands::SP => spirit::admin(ctx, &opts).await,
                 commands::CHARACTER => characters::admin(ctx, &opts).await,
@@ -100,10 +102,10 @@ async fn route(ctx: &Ctx<'_>, inter: &Interaction) -> Result<()> {
                 }
             }
         }
-        // Old /panel buttons, still on messages from before /me.
+        // Old /panel buttons, still on messages from before /mypage.
         (InteractionType::MessageComponent, Some(InteractionData::MessageComponent(data))) => {
             warn!(id = %data.custom_id, "a control nobody handles");
-            ctx.whisper("That panel is gone: use /me for your page.").await
+            ctx.whisper("That panel is gone: use /mypage for your page.").await
         }
         (InteractionType::ModalSubmit, Some(InteractionData::ModalSubmit(data))) => feats::submit(ctx, data).await,
         (kind, _) => {

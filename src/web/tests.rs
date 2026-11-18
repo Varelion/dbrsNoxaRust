@@ -60,6 +60,8 @@ fn admin() -> Admin {
                         channel(10, "Earth", ChannelKind::Category, None),
                         channel(11, "west-city", ChannelKind::Text, Some(10)),
                         channel(12, "kame-house", ChannelKind::Text, Some(10)),
+                        channel(20, "Out of character", ChannelKind::Category, None),
+                        channel(21, "chat", ChannelKind::Text, Some(20)),
                         channel(MOD_LOG, "mod-log", ChannelKind::Text, None),
                     ];
                     reply.send(server).ok();
@@ -374,4 +376,53 @@ async fn a_player_sees_their_cards_picks_who_they_play_and_sees_others_without_s
     assert!(!page.contains("Play as"));
     let (status, headers, _) = admin.call("GET", &format!("{home}/players/{NOVA_PLAYER}"), None).await;
     assert_eq!((status, headers[header::LOCATION].to_str().unwrap()), (StatusCode::SEE_OTHER, home.as_str()));
+}
+
+#[tokio::test]
+async fn mcguffins_lie_in_a_world_a_channel_or_a_rolled_roleplay_channel_and_leave_it_when_given() {
+    let mut admin = admin();
+    admin.services.settings().set_mod_log(MOD_LOG).unwrap();
+    admin.post(&format!("/players/{NOVA_PLAYER}/characters"), "slot=1&name=Captain+Nova").await;
+    admin.line().await;
+    let nova = admin.services.characters().of_player(NOVA_PLAYER).unwrap().remove(0);
+
+    // Worlds: the server's categories, read now; a category it does not have is never kept.
+    let page = admin.get("/worlds").await;
+    assert!(page.contains("name=\"world_10\""));
+    assert!(page.contains("Out of character"));
+    let page = admin.post("/worlds", "world_10=on&world_999=on").await;
+    assert!(page.contains("1 worlds, 2 roleplay channels."));
+    assert_eq!(admin.line().await, format!("🌍 <@{STAFF}> changed the worlds: + <#10> · admin pages"));
+
+    admin.post("/mcguffins", "name=Star+Key&holding=one").await;
+    admin.line().await;
+    let key = admin.services.mcguffins().all().unwrap().remove(0);
+    let at = format!("/mcguffins/{}/place", key.id);
+
+    let page = admin.post(&at, "mode=world&world=20").await;
+    assert!(page.contains("Pick a world: a category ticked on the Worlds page"));
+    let page = admin.post(&at, "mode=world&world=10").await;
+    assert!(page.contains("Star Key now lies in world Earth."));
+    assert!(page.contains("🌍 world <b>Earth</b>"));
+    assert_eq!(admin.line().await, format!("🔮 <@{STAFF}> put McGuffin **Star Key** in world <#10> (was nowhere) · admin pages"));
+
+    let page = admin.post(&at, "mode=channel&channel=60").await;
+    assert!(page.contains("Star Key now lies in #mod-log."));
+    admin.line().await;
+    let page = admin.post(&at, "mode=channel&channel=10").await;
+    assert!(page.contains("Pick a text channel the server has."));
+
+    // A roll lands in a world's text channel, never out of character.
+    let page = admin.post(&at, "mode=random").await;
+    assert!(page.contains("Re-roll"));
+    let line = admin.line().await;
+    assert!(line.contains("at random in <#11>") || line.contains("at random in <#12>"), "{line}");
+    assert!(line.contains("(of 2 roleplay channels)"));
+    assert!(admin.get("/mcguffins").await.contains("🎲 #"));
+
+    // Given, a one-holder McGuffin is carried: it no longer lies anywhere.
+    admin.post(&format!("/characters/{}/mcguffins", nova.id), &format!("mcguffin={}", key.id)).await;
+    let line = admin.line().await;
+    assert!(line.contains("; it no longer lies at random in <#1"), "{line}");
+    assert_eq!(admin.services.mcguffins().get(key.id).unwrap().unwrap().place, None);
 }

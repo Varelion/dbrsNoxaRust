@@ -12,15 +12,27 @@ pub(crate) struct McguffinRow {
     pub(crate) description: String,
     pub(crate) holding: String,
     pub(crate) retired: bool,
+    /// (kind, id) of where it lies; None: nowhere.
+    pub(crate) place: Option<(String, u64)>,
 }
 
 /// (character id, character name, player id).
 pub(crate) type HolderRow = (i64, String, u64);
 
-const COLUMNS: &str = "id, name, emoji, description, holding, retired_at IS NOT NULL";
+const COLUMNS: &str = "id, name, emoji, description, holding, retired_at IS NOT NULL, place_kind, place_id";
 
 fn row_of(row: &Row) -> rusqlite::Result<McguffinRow> {
-    Ok(McguffinRow { id: row.get(0)?, name: row.get(1)?, emoji: row.get(2)?, description: row.get(3)?, holding: row.get(4)?, retired: row.get(5)? })
+    let kind: Option<String> = row.get(6)?;
+    let place_id: Option<i64> = row.get(7)?;
+    Ok(McguffinRow {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        emoji: row.get(2)?,
+        description: row.get(3)?,
+        holding: row.get(4)?,
+        retired: row.get(5)?,
+        place: kind.zip(place_id.map(from_sql)),
+    })
 }
 
 pub(crate) struct McguffinFields<'a> {
@@ -65,6 +77,13 @@ pub(crate) fn all(conn: &Connection) -> rusqlite::Result<Vec<McguffinRow>> {
 
 pub(crate) fn set_retired(conn: &Connection, id: i64, staff_id: Option<u64>, at: Option<i64>) -> rusqlite::Result<()> {
     conn.execute("UPDATE mcguffins SET retired_by = ?2, retired_at = ?3 WHERE id = ?1", params![id, staff_id.map(to_sql), at])?;
+    Ok(())
+}
+
+/// Where it lies now: (kind, id), or None for nowhere.
+pub(crate) fn set_place(conn: &Connection, id: i64, place: Option<(&str, u64)>) -> rusqlite::Result<()> {
+    let (kind, at) = place.unzip();
+    conn.execute("UPDATE mcguffins SET place_kind = ?2, place_id = ?3 WHERE id = ?1", params![id, kind, at.map(to_sql)])?;
     Ok(())
 }
 

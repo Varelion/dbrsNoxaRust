@@ -29,6 +29,7 @@ pub(crate) mod players;
 pub(crate) mod settings;
 pub(crate) mod sheets;
 pub(crate) mod spirit;
+pub(crate) mod worlds;
 
 use std::path::Path;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -119,6 +120,10 @@ impl Services {
 
     pub(crate) const fn links(&self) -> &links::Links {
         &self.links
+    }
+
+    pub(crate) const fn worlds(&self) -> worlds::Worlds<'_> {
+        worlds::Worlds::new(&self.store)
     }
 
     pub(crate) const fn settings(&self) -> settings::Settings<'_> {
