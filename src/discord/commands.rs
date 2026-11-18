@@ -10,6 +10,7 @@
 //!   /z_moderator_feat      action:add|edit|link|unlink|archive|restore|list
 //!   /me                                      a player's own page, a link by DM: characters, SP
 //!   /profile                                 a character's card, in the channel
+//!   /tutorial [guide:players|staff]          how to use the bot, only to the caller
 //!   Log feat                                 right-click a post › Apps
 //! ```
 
@@ -21,6 +22,7 @@ use super::characters::CharacterSub;
 use super::ctx::ACTION;
 use super::feats::{FeatSub, FormField};
 use super::settings::SettingsSub;
+use super::tutorial::{GUIDE, Guide};
 use crate::domain::feats::{FeatCounts, FeatKind, FeatState, NOTE_MAX, REASON_MAX};
 use crate::domain::spirit::{MEMO_MAX, SP_MAX, SpAction};
 use crate::services::characters::{NAME_MAX, SLOT_MAX};
@@ -31,13 +33,14 @@ pub(crate) const SP: &str = "z_moderator_sp";
 pub(crate) const CHARACTER: &str = "z_moderator_character";
 pub(crate) const PROFILE: &str = "profile";
 pub(crate) const ME: &str = "me";
+pub(crate) const TUTORIAL: &str = "tutorial";
 pub(crate) const FEAT: &str = "z_moderator_feat";
 pub(crate) const LOG_FEAT: &str = "Log feat";
 
 pub(crate) const HISTORY: &str = "history";
 
 pub(crate) fn all() -> Vec<Command> {
-    vec![admin(), dbrs(), sp(), character(), me(), profile(), feat(), log_feat()]
+    vec![admin(), dbrs(), sp(), character(), me(), profile(), tutorial(), feat(), log_feat()]
 }
 
 // The verb, picked from a list: (shown, value) pairs.
@@ -85,6 +88,12 @@ fn character() -> Command {
         .option(UserBuilder::new("player", "Whose character"))
         .option(IntegerBuilder::new("slot", format!("1 to {SLOT_MAX}")).min_value(1).max_value(SLOT_MAX))
         .option(StringBuilder::new("name", "The character's name").max_length(NAME_MAX as u16))
+        .build()
+}
+
+fn tutorial() -> Command {
+    CommandBuilder::new(TUTORIAL, "How to use the bot, step by step, only to you", CommandType::ChatInput)
+        .option(StringBuilder::new(GUIDE, "Which guide; players when left out").choices(Guide::ALL.iter().map(|g| (g.label(), g.key()))))
         .build()
 }
 

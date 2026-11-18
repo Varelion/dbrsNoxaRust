@@ -9,7 +9,7 @@ use twilight_model::application::interaction::{Interaction, InteractionData, Int
 
 use super::app::App;
 use super::ctx::{Ctx, Options};
-use super::{characters, commands, feats, profile, settings, spirit, weblinks};
+use super::{characters, commands, feats, profile, settings, spirit, tutorial, weblinks};
 use crate::telemetry::{Counter, reference_of};
 
 /// What a caller reads when their command failed; the reference finds it in the journal.
@@ -86,6 +86,7 @@ async fn route(ctx: &Ctx<'_>, inter: &Interaction) -> Result<()> {
             match data.name.as_str() {
                 commands::ADMIN => weblinks::admin(ctx).await,
                 commands::ME => weblinks::me(ctx).await,
+                commands::TUTORIAL => tutorial::show(ctx, &opts).await,
                 commands::DBRS => settings::admin(ctx, &opts).await,
                 commands::SP => spirit::admin(ctx, &opts).await,
                 commands::CHARACTER => characters::admin(ctx, &opts).await,

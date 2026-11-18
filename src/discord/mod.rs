@@ -10,6 +10,7 @@
 //!                                                   ├─ spirit     /z_moderator_sp
 //!                                                   ├─ characters /z_moderator_character
 //!                                                   ├─ profile    /profile: a card, in the channel
+//!                                                   ├─ tutorial   /tutorial: how to use the bot
 //!                                                   └─ feats      /z_moderator_feat, Log feat
 //!
 //!   web's asks ─► guild::answer ─► names, channels, picture uploads and links, mod log lines
@@ -27,6 +28,7 @@ mod profile;
 mod settings;
 mod spirit;
 mod text;
+mod tutorial;
 mod weblinks;
 
 use std::future::{Future, IntoFuture as _};

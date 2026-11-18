@@ -94,6 +94,18 @@ impl<'a> Ctx<'a> {
         self.respond(InteractionResponseType::ChannelMessageWithSource, data).await
     }
 
+    /// Cards only the caller sees, with no pings: a guide.
+    pub(crate) async fn whisper_embeds(&self, embeds: Vec<Embed>) -> Result<()> {
+        debug!(count = embeds.len(), "whispered cards");
+        let data = InteractionResponseData {
+            embeds: Some(embeds),
+            flags: Some(MessageFlags::EPHEMERAL),
+            allowed_mentions: Some(AllowedMentions::default()),
+            ..InteractionResponseData::default()
+        };
+        self.respond(InteractionResponseType::ChannelMessageWithSource, data).await
+    }
+
     /// "noxaDBRS is thinking…", only to the caller: buys time for HTTP calls before `edit`.
     pub(crate) async fn defer(&self) -> Result<()> {
         let data = InteractionResponseData { flags: Some(MessageFlags::EPHEMERAL), ..InteractionResponseData::default() };

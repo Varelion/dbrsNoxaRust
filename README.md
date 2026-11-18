@@ -26,6 +26,7 @@ One command per thing; staff pick the verb from its `action` list.
 | Right-click a post › Apps › Log feat | staff | A feat from a post, its author's character prefilled |
 | `/me` | everyone | Your page, a link by DM: your characters, who you play, your Spirit Points, everyone's cards |
 | `/profile` | everyone | A character's card, posted in the channel |
+| `/tutorial [guide:players\|staff]` | everyone (staff guide: staff) | How to use the bot, step by step, only to the caller |
 
 ## Web pages
 

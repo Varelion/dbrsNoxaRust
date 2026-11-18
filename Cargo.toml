@@ -29,6 +29,9 @@ twilight-http = "=0.18.0"
 twilight-model = "=0.18.0"
 twilight-util = { version = "=0.18.0", features = ["builder"] }
 
+[dev-dependencies]
+twilight-validate = "=0.18.0"
+
 # Small and lean for the Pi: one optimised unit, link-time optimisation, no debug symbols.
 [profile.release]
 codegen-units = 1
