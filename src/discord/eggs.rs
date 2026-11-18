@@ -3,6 +3,7 @@
 //!
 //! ```text
 //!   "caw!"        ─► CAW!                       "how r u" ─► cow r moo, and back
+//!   "kakarot"     ─► Z Broly himself, by webhook, his face attached
 //!   "kamehameha"  ─► KA… ME… HA… ME… HAAAA! 🌊   "sheeesh, that hurt" ─► SHEEEESH
 //!   ".cookie"     ─► ㊁ Curie's Curious Cookies ㊁: a fortune, out of 168
 //! ```
@@ -10,21 +11,42 @@
 use twilight_model::channel::message::Embed;
 use twilight_util::builder::embed::{EmbedBuilder, EmbedFooterBuilder, ImageSource};
 
+use super::places::Persona;
 use crate::services::balls::random_below;
 
-/// Exact triggers, matched lowercase and trimmed, with their answers.
-const EGGS: &[(&[&str], &str)] = &[
-    (&["caw!"], "CAW!"),
-    (&["how r u"], "cow r moo"),
-    (&["cow r moo"], "how r u"),
-    (&["kakarot", "kakarot!", "kakarotto"], "**KAKAROTTOOOOOO!!!**"),
-    (&["kamehameha", "kamehameha!"], "KA… ME… HA… ME… **HAAAAAAAAA!** 🌊"),
-    (&["it's over 9000", "it's over 9000!", "its over 9000", "over 9000", "over 9000!"], "*crushes scouter* WHAT?! NINE THOUSAND?! **THERE'S NO WAY THAT CAN BE RIGHT!**"),
+/// Broly's face: his webhook's avatar, and the picture he answers with.
+pub(crate) const BROLY_JPEG: &[u8] = include_bytes!("../../data/broly.jpg");
+pub(crate) const BROLY_FILE: &str = "broly.jpg";
+pub(crate) const BROLY: Persona = Persona { name: "Z Broly", jpeg: Some(BROLY_JPEG) };
+
+/// Who answers an egg.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Voice {
+    Bot,
+    Broly,
+}
+
+/// An egg's answer, and who says it.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Egg {
+    pub(crate) voice: Voice,
+    pub(crate) text: String,
+}
+
+/// Exact triggers, matched lowercase and trimmed, with who answers and how.
+const EGGS: &[(&[&str], Voice, &str)] = &[
+    (&["caw!"], Voice::Bot, "CAW!"),
+    (&["how r u"], Voice::Bot, "cow r moo"),
+    (&["cow r moo"], Voice::Bot, "how r u"),
+    (&["kakarot", "kakarot!", "kakarotto"], Voice::Broly, "**KAKAROTTOOOOOO!!!**"),
+    (&["kamehameha", "kamehameha!"], Voice::Bot, "KA… ME… HA… ME… **HAAAAAAAAA!** 🌊"),
+    (&["it's over 9000", "it's over 9000!", "its over 9000", "over 9000", "over 9000!"], Voice::Bot, "WHAT?! NINE THOUSAND?! **THERE'S NO WAY THAT CAN BE RIGHT!**"),
     (
         &["eternal dragon, by your name i summon you forth", "arise shenron", "arise, shenron"],
+        Voice::Bot,
         "🐉 *The sky goes black.* **STATE YOUR WISH. I SHALL GRANT ANY ONE WISH.**\n-# Dragon Balls are found in play, not here.",
     ),
-    (&["yamcha", "f for yamcha"], "*Yamcha lies face down in a crater, curled up, eyes closed.* 🫡"),
+    (&["yamcha", "f for yamcha"], Voice::Bot, "*Yamcha lies face down in a crater, curled up, eyes closed.* 🫡"),
 ];
 
 pub(crate) const COOKIE: &str = ".cookie";
@@ -56,13 +78,13 @@ fn sheesh(content: &str) -> Option<String> {
 }
 
 /// The answer to a message, if it is an egg.
-pub(crate) fn answer(content: &str) -> Option<String> {
+pub(crate) fn answer(content: &str) -> Option<Egg> {
     let typed = content.trim().to_lowercase();
     let typed = typed.strip_prefix('!').map_or(typed.clone(), |rest| format!(".{rest}"));
-    if let Some((_, reply)) = EGGS.iter().find(|(triggers, _)| triggers.contains(&typed.as_str())) {
-        return Some((*reply).to_owned());
+    if let Some((_, voice, reply)) = EGGS.iter().find(|(triggers, _, _)| triggers.contains(&typed.as_str())) {
+        return Some(Egg { voice: *voice, text: (*reply).to_owned() });
     }
-    sheesh(content)
+    sheesh(content).map(|text| Egg { voice: Voice::Bot, text })
 }
 
 pub(crate) fn is_cookie(content: &str) -> bool {
@@ -89,23 +111,34 @@ pub(crate) fn cookie() -> anyhow::Result<Embed> {
 mod tests {
     use super::*;
 
+    fn said(content: &str) -> Option<String> {
+        answer(content).map(|egg| egg.text)
+    }
+
+    #[test]
+    fn kakarot_is_brolys_to_answer() {
+        assert_eq!(answer("Kakarot!").map(|egg| egg.voice), Some(Voice::Broly));
+        assert_eq!(answer("caw!").map(|egg| egg.voice), Some(Voice::Bot));
+        assert!(BROLY_JPEG.starts_with(&[0xFF, 0xD8]));
+    }
+
     #[test]
     fn sheesh_gets_one_more_e_anywhere_as_a_word() {
-        assert_eq!(answer("shesh"), Some("SHEESH".to_owned()));
-        assert_eq!(answer("SHEEESH"), Some("SHEEEESH".to_owned()));
-        assert_eq!(answer("ok sheesh, that hurt"), Some("SHEEESH".to_owned()));
-        assert_eq!(answer("shsh"), None);
-        assert_eq!(answer("bushesh"), None);
-        assert_eq!(answer("sheeshing"), None);
+        assert_eq!(said("shesh"), Some("SHEESH".to_owned()));
+        assert_eq!(said("SHEEESH"), Some("SHEEEESH".to_owned()));
+        assert_eq!(said("ok sheesh, that hurt"), Some("SHEEESH".to_owned()));
+        assert_eq!(said("shsh"), None);
+        assert_eq!(said("bushesh"), None);
+        assert_eq!(said("sheeshing"), None);
     }
 
     #[test]
     fn eggs_match_the_whole_message_only() {
-        assert_eq!(answer("  Caw! "), Some("CAW!".to_owned()));
-        assert_eq!(answer("how r u"), Some("cow r moo".to_owned()));
-        assert_eq!(answer("KAMEHAMEHA!"), Some("KA… ME… HA… ME… **HAAAAAAAAA!** 🌊".to_owned()));
-        assert_eq!(answer("he fired a kamehameha"), None);
-        assert_eq!(answer("hello"), None);
+        assert_eq!(said("  Caw! "), Some("CAW!".to_owned()));
+        assert_eq!(said("how r u"), Some("cow r moo".to_owned()));
+        assert_eq!(said("KAMEHAMEHA!"), Some("KA… ME… HA… ME… **HAAAAAAAAA!** 🌊".to_owned()));
+        assert_eq!(said("he fired a kamehameha"), None);
+        assert_eq!(said("hello"), None);
     }
 
     #[test]
