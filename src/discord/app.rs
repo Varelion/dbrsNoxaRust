@@ -12,6 +12,7 @@ use twilight_model::id::Id;
 use twilight_model::id::marker::{ApplicationMarker, ChannelMarker, GuildMarker, RoleMarker, UserMarker};
 
 use super::guild::Caches;
+use super::places::Places as Spots;
 use crate::services::Services;
 use crate::services::authority::{Caller, can_moderate};
 use crate::telemetry::Stats;
@@ -27,6 +28,8 @@ pub(crate) struct App {
     /// Where uploaded pictures are kept; None: uploads are off.
     pub(crate) pictures: Option<Id<ChannelMarker>>,
     pub(crate) caches: Caches,
+    /// Where channels sit, and the webhooks that post as characters.
+    pub(crate) places: Spots,
     pub(crate) reading: Reading,
     // Interactions carry role ids; staff roles are known by name. Filled by GuildCreate, kept by role events.
     roles: RwLock<HashMap<Id<RoleMarker>, Role>>,
@@ -64,6 +67,7 @@ impl App {
             web_url: places.web_url,
             pictures: places.pictures,
             caches: Caches::default(),
+            places: Spots::default(),
             reading,
             roles: RwLock::new(HashMap::new()),
             owner: RwLock::new(None),

@@ -15,6 +15,7 @@ use tokio::sync::oneshot;
 use tracing::warn;
 
 use crate::domain::pictures::ImageKind;
+use crate::domain::tutorial::Did;
 use crate::store::characters::CharacterRow;
 
 /// Someone as the server shows them: their name there, and their picture there.
@@ -85,6 +86,8 @@ pub(crate) enum Ask {
     Channels { reply: oneshot::Sender<Vec<Channel>> },
     Upload { upload: Upload, reply: oneshot::Sender<Result<Uploaded, UploadRefused>> },
     Fresh { pictures: Vec<Stored>, reply: oneshot::Sender<HashMap<u64, String>> },
+    /// Something a person did on the web, for their tutorial.
+    Did { user: u64, did: Did },
 }
 
 #[derive(Clone)]
@@ -114,6 +117,11 @@ impl Guild {
     /// Names and pictures, as the server shows them; an id Discord does not know is left out.
     pub(crate) async fn people(&self, users: Vec<u64>) -> HashMap<u64, Person> {
         self.ask(|reply| Ask::People { users, reply }).await.unwrap_or_default()
+    }
+
+    /// Tells the tutorial what someone did on the web; its next step is posted in their thread.
+    pub(crate) fn did(&self, user: u64, did: Did) {
+        self.asks.send(Ask::Did { user, did }).ok();
     }
 
     /// Display names only.

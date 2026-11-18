@@ -28,6 +28,9 @@ use super::app::Reading;
 use super::commands::{self, CHARACTER, DBRS, FEAT, LOG_FEAT, SP};
 use super::ctx::{ACTION, Ctx, Options};
 use super::dot::{PRUNE, PRUNE_MAX};
+use super::eggs::COOKIE;
+
+const DOT_SET: &str = ".set";
 
 /// The option that names a page.
 pub(crate) const TOPIC: &str = "topic";
@@ -133,12 +136,38 @@ const GUIDES: &[Guide] = &[
         audience: Audience::Everyone,
         summary: "New here: the first three things to do",
         steps: &[
-            "1. `/mypage`: the bot DMs you a link to your page.",
-            "2. On it, **Play as <name>** picks the character you play.",
-            "3. `/profile` shows that character's card in a channel.",
-            "`/tutorial` walks through all of it. `/help <command>` explains one command.",
+            "1. `/tutorial`: learn by doing it, one task at a time, in a thread of your own.",
+            "2. `/mypage`: your page, by DM: your characters, who you play, posting, Spirit Points.",
+            "3. `/panel` or `.set1`: switch who you play. `nova: text` posts as them (`/help posting`).",
+            "`/help <command>` explains any command.",
         ],
-        commands: &[("/mypage", &[]), ("/profile", &[]), ("/tutorial", &["/tutorial"])],
+        commands: &[("/tutorial", &["/tutorial", "/tutorial guide:staff"]), ("/mypage", &[]), ("/panel", &[])],
+    },
+    Guide {
+        name: "posting",
+        audience: Audience::Everyone,
+        summary: "Post as your character: prefixes, expressions, editing and deleting",
+        steps: &[
+            "1. On `/mypage`, under a character's **Posting**, give them a prefix, like `nova`.",
+            "2. Post `nova: Hello there`: the bot posts it again under their name and picture, and removes yours.",
+            "3. **Expressions** are other pictures: add `happy` with an image link, then post `nova:happy Hi!`. An unknown one posts with the main picture.",
+            "React ❌ to your post to delete it, every part; react ✏️ and press **Edit** to change it. Only you can.",
+            "A reply keeps who it answers; long posts come in parts; attachments come along.",
+            "Staff post as the cast the same way: an NPC's prefix, when they have no character of their own with it.",
+        ],
+        commands: &[("/mypage", &[])],
+    },
+    Guide {
+        name: "slots",
+        audience: Audience::Everyone,
+        summary: "Your character slots, and switching who you play",
+        steps: &[
+            "`/panel` shows every slot: race, tier, prefix, posts, what they carry; ✅ marks the one you play.",
+            "Press a number under it to play that character.",
+            "Faster: type `.set1` (`.set2` for slot 2 …); the answer and your command go away after 7 seconds.",
+            "Or `/set character:` and pick from the menu. `/panel player:@someone` shows theirs.",
+        ],
+        commands: &[("/panel", &["/panel", "/panel player:@Nicolas"]), ("/set", &["/set character:Captain Nova"]), (DOT_SET, &[".set1"])],
     },
     Guide {
         name: "page",
@@ -428,6 +457,19 @@ fn prune_page(reading: Reading) -> Page {
     page
 }
 
+// The dot commands everyone may type: .set<slot>, .cookie.
+fn dot_pages(reading: Reading) -> Vec<Page> {
+    let off = (reading == Reading::CommandsOnly).then(|| "**Off right now**: the bot may not read messages (the Message Content intent).".to_owned());
+    let mut set = Page::new(DOT_SET.to_owned(), Audience::Everyone, Kind::Command, "Play the character in a slot, fast".to_owned());
+    set.synopsis = vec![format!("{DOT_SET}<slot>")];
+    set.options = vec![Term { term: "<slot>".to_owned(), text: "1 to 10, no space needed: `.set2`".to_owned() }];
+    set.description = ["Typed as a message. Answers with the NOW PLAYING box; it and your message go after 7 seconds.".to_owned()].into_iter().chain(off.clone()).collect();
+    let mut cookie = Page::new(COOKIE.to_owned(), Audience::Everyone, Kind::Command, "A fortune cookie, from Curie's Curious Cookies".to_owned());
+    cookie.synopsis = vec![COOKIE.to_owned()];
+    cookie.description = ["Typed as a message: one of 168 fortunes. Your message goes; the cookie stays.".to_owned()].into_iter().chain(off).collect();
+    vec![set, cookie]
+}
+
 // A guide's first word names its command; "Log feat" is two words and one command.
 fn command_of(term: &str) -> &str {
     if term == LOG_FEAT { term } else { term.split_whitespace().next().unwrap_or(term) }
@@ -437,6 +479,7 @@ fn command_of(term: &str) -> &str {
 fn pages(reading: Reading) -> Vec<Page> {
     let mut commands: Vec<Page> = commands::all().iter().map(command_page).collect();
     commands.push(prune_page(reading));
+    commands.extend(dot_pages(reading));
 
     let guides: Vec<Page> = GUIDES
         .iter()

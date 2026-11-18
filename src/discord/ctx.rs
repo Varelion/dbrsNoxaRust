@@ -137,6 +137,50 @@ impl<'a> Ctx<'a> {
         self.respond(InteractionResponseType::ChannelMessageWithSource, data).await
     }
 
+    /// A panel only the caller sees: an embed with controls under it.
+    pub(crate) async fn panel(&self, embed: Embed, components: Vec<Component>) -> Result<()> {
+        let data = InteractionResponseData {
+            embeds: Some(vec![embed]),
+            components: Some(components),
+            flags: Some(MessageFlags::EPHEMERAL),
+            allowed_mentions: Some(AllowedMentions::default()),
+            ..InteractionResponseData::default()
+        };
+        self.respond(InteractionResponseType::ChannelMessageWithSource, data).await
+    }
+
+    /// The panel a control came from, redrawn in place.
+    pub(crate) async fn update(&self, embed: Embed, components: Vec<Component>) -> Result<()> {
+        let data = InteractionResponseData {
+            embeds: Some(vec![embed]),
+            components: Some(components),
+            allowed_mentions: Some(AllowedMentions::default()),
+            ..InteractionResponseData::default()
+        };
+        self.respond(InteractionResponseType::UpdateMessage, data).await
+    }
+
+    /// A second message only the caller sees, after the first answer.
+    pub(crate) async fn followup(&self, text: &str) -> Result<()> {
+        debug!(reply = %cut(text, REPLY_LOGGED), "followup");
+        let mentions = AllowedMentions::default();
+        self.app
+            .http
+            .interaction(self.app.app_id)
+            .create_followup(&self.inter.token)
+            .content(text)
+            .flags(MessageFlags::EPHEMERAL)
+            .allowed_mentions(Some(&mentions))
+            .await
+            .context("following up")?;
+        Ok(())
+    }
+
+    /// The message a control or form was pressed on: (channel, message).
+    pub(crate) fn source_message(&self) -> Option<(Id<ChannelMarker>, Id<twilight_model::id::marker::MessageMarker>)> {
+        self.inter.message.as_ref().map(|m| (m.channel_id, m.id))
+    }
+
     pub(crate) async fn modal(&self, custom_id: String, title: String, components: Vec<Component>) -> Result<()> {
         let data = InteractionResponseData {
             custom_id: Some(custom_id),

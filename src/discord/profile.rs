@@ -85,6 +85,7 @@ fn card(profile: &Profile, picture: String) -> Result<twilight_model::channel::m
         .field(EmbedFieldBuilder::new("Player", format!("<@{}>", c.player_id)).inline())
         .field(EmbedFieldBuilder::new("Dragon Balls", listed(balls)).inline())
         .field(EmbedFieldBuilder::new("Items", listed(items)).inline())
+        .field(EmbedFieldBuilder::new("Posts", c.posts.to_string()).inline())
         .footer(EmbedFooterBuilder::new(format!("Slot {}", c.slot)))
         .build())
 }
@@ -149,7 +150,7 @@ mod tests {
 
     #[test]
     fn the_card_names_the_active_character_unless_one_is_picked() {
-        let row = |id, slot, name: &str| CharacterRow { id, player_id: USER, slot, name: name.to_owned(), race: None, tier: None, title: None, bio: None, picture_url: None, picture_message: None, prefix: None, notes: None };
+        let row = |id, slot, name: &str| CharacterRow { id, player_id: USER, slot, name: name.to_owned(), race: None, tier: None, title: None, bio: None, picture_url: None, picture_message: None, prefix: None, notes: None, posting: true, posts: 0 };
         let theirs = [row(1, 1, "Noxa"), row(2, 2, "Yuan")];
         assert_eq!(chosen(&theirs, None, Some(2)), Some(2));
         assert_eq!(chosen(&theirs, None, None), Some(1));

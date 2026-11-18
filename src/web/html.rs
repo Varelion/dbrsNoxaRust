@@ -57,6 +57,7 @@ footer{max-width:1100px;margin:0 auto;padding:0 max(16px,4vw) 32px;color:var(--m
 .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,320px),1fr));gap:18px;align-items:start}
 .card.playing{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
 .bio{white-space:pre-line}
+details{border-top:1px solid var(--line);padding-top:8px}summary{cursor:pointer;color:var(--muted)}details .card{border:0;padding:8px 0 0}
 ";
 
 /// Where a page sits in the menu.

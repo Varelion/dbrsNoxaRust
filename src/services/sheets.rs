@@ -9,7 +9,9 @@
 
 use anyhow::Result;
 
-use crate::domain::npcs::{BadPrefix, CAST, clean_prefix};
+use crate::domain::npcs::CAST;
+use crate::domain::proxy::{BadPrefix, clean_expression, clean_prefix, parse_color};
+use crate::store::expressions::{self, ExpressionRow};
 use crate::store::characters::{self as repo, CharacterRow, NewCharacter, SheetFields};
 use crate::store::Store;
 
@@ -28,6 +30,38 @@ pub(crate) enum PictureChoice {
     Link,
     /// The owner's Discord icon: any link or upload is dropped.
     Icon,
+}
+
+/// Whether "prefix: text" posts as a character.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Posting {
+    #[default]
+    ByPrefix,
+    Off,
+}
+
+impl Posting {
+    pub(crate) const fn on(self) -> bool {
+        matches!(self, Self::ByPrefix)
+    }
+}
+
+/// A player's own posting settings, saved.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum PostingSaved {
+    Done(Box<CharacterRow>),
+    NotYours,
+    BadPrefix(&'static str),
+    PrefixTaken(String),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ExpressionSaved {
+    Done(ExpressionRow),
+    NotFound,
+    BadName,
+    BadLink,
+    BadColor,
 }
 
 /// Which sheet a save writes.
@@ -49,6 +83,7 @@ pub(crate) struct SheetForm {
     pub(crate) picture_url: String,
     pub(crate) picture: PictureChoice,
     pub(crate) notes: String,
+    pub(crate) posting: Posting,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -78,6 +113,7 @@ pub(crate) fn changed(before: &CharacterRow, after: &CharacterRow) -> Vec<&'stat
         ("bio", before.bio != after.bio),
         ("picture", before.picture_url != after.picture_url || before.picture_message != after.picture_message),
         ("notes", before.notes != after.notes),
+        ("posting", before.posting != after.posting),
     ];
     pairs.into_iter().filter(|(_, differs)| *differs).map(|(name, _)| name).collect()
 }
@@ -129,6 +165,63 @@ impl<'a> Sheets<'a> {
         })
     }
 
+    /// A player's own character, or None.
+    pub(crate) fn owned(&self, player: u64, id: i64) -> Result<Option<CharacterRow>> {
+        Ok(self.get(id)?.filter(|row| row.player_id == player))
+    }
+
+    /// A character's prefix and whether it posts, set by its player (or staff for the cast: player 0).
+    pub(crate) fn set_posting(&self, player: u64, id: i64, prefix: &str, posting: Posting) -> Result<PostingSaved> {
+        let prefix = match clean_prefix(prefix) {
+            Ok(prefix) => prefix,
+            Err(bad) => return Ok(PostingSaved::BadPrefix(bad.reason())),
+        };
+        self.store.write(|tx| {
+            if repo::get(tx, id)?.filter(|row| row.player_id == player).is_none() {
+                return Ok(PostingSaved::NotYours);
+            }
+            if let Some(prefix) = prefix.as_deref()
+                && let Some(other) = repo::by_prefix(tx, player, prefix)?.filter(|o| o.id != id)
+            {
+                return Ok(PostingSaved::PrefixTaken(other.name));
+            }
+            repo::set_posting(tx, id, prefix.as_deref(), posting.on())?;
+            Ok(PostingSaved::Done(Box::new(repo::get(tx, id)?.expect("the character just saved"))))
+        })
+    }
+
+    pub(crate) fn expressions(&self, id: i64) -> Result<Vec<ExpressionRow>> {
+        self.store.read(|c| expressions::of_character(c, id))
+    }
+
+    /// Adds an expression, or replaces the one of that name.
+    pub(crate) fn save_expression(&self, id: i64, name: &str, url: &str, color: &str) -> Result<ExpressionSaved> {
+        let Some(name) = clean_expression(name) else {
+            return Ok(ExpressionSaved::BadName);
+        };
+        let url = url.trim();
+        if !url.starts_with("https://") || url.len() > URL_MAX {
+            return Ok(ExpressionSaved::BadLink);
+        }
+        let Ok(color) = parse_color(color) else {
+            return Ok(ExpressionSaved::BadColor);
+        };
+        let row = ExpressionRow { name, url: url.to_owned(), color };
+        self.store.write(|tx| {
+            if repo::get(tx, id)?.is_none() {
+                return Ok(ExpressionSaved::NotFound);
+            }
+            expressions::save(tx, id, &row)?;
+            Ok(ExpressionSaved::Done(row))
+        })
+    }
+
+    /// False when the character had no such expression.
+    pub(crate) fn remove_expression(&self, id: i64, name: &str) -> Result<bool> {
+        let name = name.trim().to_lowercase();
+        self.store.write(|tx| expressions::remove(tx, id, &name))
+    }
+
     /// A new NPC or an edited sheet: checked whole, then written in one go.
     pub(crate) fn save(&self, target: Target, form: &SheetForm, staff_id: u64) -> Result<SheetSaved> {
         let name = clean_line(&form.name, NAME_MAX);
@@ -163,8 +256,9 @@ impl<'a> Sheets<'a> {
                 Target::NewNpc => None,
             };
             let id = before.as_ref().map(|row| row.id);
+            let player = before.as_ref().map_or(CAST, |row| row.player_id);
             if let Some(prefix) = prefix.as_deref() {
-                let owner = repo::by_prefix(tx, prefix)?;
+                let owner = repo::by_prefix(tx, player, prefix)?;
                 if let Some(owner) = owner.filter(|o| Some(o.id) != id) {
                     return Ok(SheetSaved::PrefixTaken(owner.name));
                 }
@@ -189,6 +283,7 @@ impl<'a> Sheets<'a> {
                 picture_url: picture.as_deref(),
                 picture_message,
                 notes: notes.as_deref(),
+                posting: form.posting.on(),
             };
             repo::save_sheet(tx, target, &fields)?;
             let after = Box::new(repo::get(tx, target)?.expect("the sheet just saved"));
@@ -203,6 +298,40 @@ mod tests {
     use crate::services::Services;
 
     const STAFF: u64 = 9;
+
+    #[test]
+    fn a_player_sets_their_own_prefix_unique_among_their_characters_only() {
+        let services = Services::memory(0);
+        let add = |player, slot, name| match services.characters().add(player, slot, name, STAFF).unwrap() {
+            crate::services::characters::AddCharacter::Added(row) => row.id,
+            other => panic!("{other:?}"),
+        };
+        let (nova, nicolas, noxa) = (add(157, 1, "Captain Nova"), add(157, 2, "Nicolas"), add(410, 1, "Noxa"));
+        let sheets = services.sheets();
+        assert!(matches!(sheets.set_posting(157, nova, "N", Posting::ByPrefix).unwrap(), PostingSaved::Done(row) if row.prefix.as_deref() == Some("n")));
+        assert_eq!(sheets.set_posting(157, nicolas, "n", Posting::ByPrefix).unwrap(), PostingSaved::PrefixTaken("Captain Nova".to_owned()));
+        // Another player may use the same prefix.
+        assert!(matches!(sheets.set_posting(410, noxa, "n", Posting::ByPrefix).unwrap(), PostingSaved::Done(_)));
+        assert_eq!(sheets.set_posting(410, nova, "x", Posting::ByPrefix).unwrap(), PostingSaved::NotYours);
+        assert!(matches!(sheets.set_posting(157, nova, "n", Posting::Off).unwrap(), PostingSaved::Done(row) if !row.posting));
+    }
+
+    #[test]
+    fn expressions_are_named_linked_and_coloured() {
+        let services = Services::memory(0);
+        let sheets = services.sheets();
+        let yenma = saved(sheets.save(Target::NewNpc, &form("King Yenma", "yen"), STAFF).unwrap());
+        let ExpressionSaved::Done(happy) = sheets.save_expression(yenma.id, "Happy:", "https://i.imgur.com/h.png", "#C0392B").unwrap() else {
+            panic!("not saved");
+        };
+        assert_eq!((happy.name.as_str(), happy.color), ("happy", Some(0xC0_39_2B)));
+        assert_eq!(sheets.save_expression(yenma.id, "two words", "https://x", "").unwrap(), ExpressionSaved::BadName);
+        assert_eq!(sheets.save_expression(yenma.id, "sad", "javascript:x", "").unwrap(), ExpressionSaved::BadLink);
+        assert_eq!(sheets.save_expression(yenma.id, "sad", "https://x", "blue").unwrap(), ExpressionSaved::BadColor);
+        assert_eq!(sheets.expressions(yenma.id).unwrap().len(), 1);
+        assert!(sheets.remove_expression(yenma.id, "HAPPY").unwrap());
+        assert!(sheets.expressions(yenma.id).unwrap().is_empty());
+    }
 
     fn form(name: &str, prefix: &str) -> SheetForm {
         SheetForm { name: name.to_owned(), prefix: prefix.to_owned(), ..SheetForm::default() }

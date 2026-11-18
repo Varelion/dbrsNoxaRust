@@ -26,7 +26,10 @@ One command per thing; staff pick the verb from its `action` list.
 | Right-click a post › Apps › Log feat | staff | A feat from a post, its author's character prefilled |
 | `/mypage` | everyone | Your page, a link by DM: your characters, who you play, your Spirit Points, everyone's cards |
 | `/profile` | everyone | A character's card, posted in the channel |
-| `/tutorial [guide:players\|staff]` | everyone (staff guide: staff) | How to use the bot, step by step, only to the caller |
+| `/panel [player]`, `/set character`, `.set1`…`.set10` | everyone | Bot1's slot panel (number buttons, yours only), and switching who you play |
+| `nova: text`, `nova:happy text` | everyone (cast prefixes: staff) | Post as a character through a webhook; ❌ deletes it, ✏️ edits it, its author only |
+| `.cookie` | everyone | A fortune cookie; there are Easter eggs too |
+| `/tutorial [guide:players\|staff]` | everyone (staff track: staff) | Learn by doing: one task at a time in a thread of your own; it moves on when it sees the task done |
 | `/help [topic]` | everyone (staff pages: staff) | A guide, or any command's page, read from its registration: `/help /z_moderator_sp give` |
 | `.prune <count>` | staff | Typed as a message: deletes the last 1 to 100 messages (not those over 14 days old). Needs the Message Content intent |
 
@@ -73,7 +76,10 @@ cp .env.example .env    # fill in DISCORD_TOKEN
 cargo run --release
 ```
 
-Discord Developer Portal › Bot: enable the **Message Content** intent for `.prune` (the bot checks at start and
+The bot needs **Manage Webhooks** and **Manage Messages** where people post as characters, and **Create Private
+Threads** for `/tutorial` (it falls back to a public thread, then DMs).
+
+Discord Developer Portal › Bot: enable the **Message Content** intent for posting as characters and dot commands (the bot checks at start and
 logs whether dot commands are on; without it, it never asks Discord for it, so it cannot be locked out), and the **Server Members** intent (`/z_moderator_sp grant` lists a role's holders;
 the admin pages list members' names, else look them up one by one).
 

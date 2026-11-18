@@ -9,7 +9,8 @@ use twilight_model::application::interaction::{Interaction, InteractionData, Int
 
 use super::app::App;
 use super::ctx::{Ctx, Options};
-use super::{characters, commands, feats, help, profile, settings, spirit, tutorial, weblinks};
+use super::{characters, commands, feats, help, profile, proxy, settings, slots, spirit, tutorial, weblinks};
+use crate::domain::tutorial::Did;
 use crate::telemetry::{Counter, reference_of};
 
 /// What a caller reads when their command failed; the reference finds it in the journal.
@@ -50,6 +51,13 @@ pub(crate) async fn handle(app: &App, inter: Interaction) -> Result<()> {
     let handled = route(&ctx, &inter).await;
     let ms = started.elapsed().as_millis();
 
+    // A command done counts toward the caller's tutorial.
+    if let (Ok(()), InteractionType::ApplicationCommand, Some(InteractionData::ApplicationCommand(data)), Some(user)) =
+        (&handled, inter.kind, inter.data.as_ref(), ctx.user_id())
+    {
+        tutorial::observe(app, user.get(), Did::Command(data.name.clone())).await;
+    }
+
     match &handled {
         // Autocomplete fires on every keystroke: kept out of the info level.
         Ok(()) if inter.kind == InteractionType::ApplicationCommandAutocomplete => debug!(ms, "done"),
@@ -74,6 +82,7 @@ async fn route(ctx: &Ctx<'_>, inter: &Interaction) -> Result<()> {
             let opts = Options::of(data);
             match data.name.as_str() {
                 commands::PROFILE => profile::complete(ctx, &opts).await,
+                commands::SET => slots::complete(ctx, &opts).await,
                 commands::HELP => help::complete(ctx, &opts).await,
                 commands::FEAT => feats::complete(ctx, &opts).await,
                 other => {
@@ -87,7 +96,9 @@ async fn route(ctx: &Ctx<'_>, inter: &Interaction) -> Result<()> {
             match data.name.as_str() {
                 commands::ADMIN => weblinks::admin(ctx).await,
                 commands::MYPAGE => weblinks::mypage(ctx).await,
-                commands::TUTORIAL => tutorial::show(ctx, &opts).await,
+                commands::TUTORIAL => tutorial::start(ctx, &opts).await,
+                commands::PANEL => slots::panel(ctx, &opts).await,
+                commands::SET => slots::set(ctx, &opts).await,
                 commands::HELP => help::show(ctx, &opts).await,
                 commands::DBRS => settings::admin(ctx, &opts).await,
                 commands::SP => spirit::admin(ctx, &opts).await,
@@ -102,11 +113,20 @@ async fn route(ctx: &Ctx<'_>, inter: &Interaction) -> Result<()> {
                 }
             }
         }
-        // Old /panel buttons, still on messages from before /mypage.
         (InteractionType::MessageComponent, Some(InteractionData::MessageComponent(data))) => {
+            if slots::owns(&data.custom_id) {
+                return slots::pressed(ctx, data).await;
+            }
+            if proxy::owns(&data.custom_id) {
+                return proxy::component(ctx, data).await;
+            }
+            if tutorial::owns(&data.custom_id) {
+                return tutorial::component(ctx, data).await;
+            }
             warn!(id = %data.custom_id, "a control nobody handles");
-            ctx.whisper("That panel is gone: use /mypage for your page.").await
+            ctx.whisper("That control is from an older version of the bot. Run the command again.").await
         }
+        (InteractionType::ModalSubmit, Some(InteractionData::ModalSubmit(data))) if proxy::owns(&data.custom_id) => proxy::submit(ctx, data).await,
         (InteractionType::ModalSubmit, Some(InteractionData::ModalSubmit(data))) => feats::submit(ctx, data).await,
         (kind, _) => {
             warn!(?kind, "interaction with nothing to handle it");

@@ -28,7 +28,8 @@ use crate::services::characters::NAME_MAX;
 use crate::services::feats::{Added, FeatView, Moved, NewFeat, PostRef};
 use crate::services::guild::{Stored, Upload, UploadRefused, picture_link};
 use crate::services::links::Notice;
-use crate::services::sheets::{PictureChoice, SheetForm, SheetSaved, Target, changed};
+use crate::services::sheets::{ExpressionSaved, PictureChoice, Posting, SheetForm, SheetSaved, Target, changed};
+use crate::store::expressions::ExpressionRow;
 use crate::store::characters::CharacterRow;
 
 const GONE: &str = "That character is gone.";
@@ -49,6 +50,7 @@ pub(super) struct SheetInput {
     picture_url: String,
     icon: String,
     notes: String,
+    posting: String,
 }
 
 impl SheetInput {
@@ -65,6 +67,7 @@ impl SheetInput {
             picture_url: if row.picture_message.is_some() { String::new() } else { text(row.picture_url.as_deref()) },
             icon: String::new(),
             notes: text(row.notes.as_deref()),
+            posting: if row.posting { ICON_ON.to_owned() } else { String::new() },
         }
     }
 
@@ -79,6 +82,7 @@ impl SheetInput {
             picture_url: self.picture_url.clone(),
             picture: if self.icon == ICON_ON { PictureChoice::Icon } else { PictureChoice::Link },
             notes: self.notes.clone(),
+            posting: if self.posting == ICON_ON { Posting::ByPrefix } else { Posting::Off },
         }
     }
 }
@@ -258,6 +262,7 @@ async fn sheet_page(web: &Web, session: &Session, id: i64, typed: Option<SheetIn
          <label>Picture link (https)<input name=\"picture_url\" value=\"{picture}\" maxlength=\"400\" placeholder=\"https://…\"></label>\
          <p class=\"dim small wide\">{picture_note}</p>\
          <label class=\"check wide\"><input type=\"checkbox\" name=\"icon\" value=\"{ICON_ON}\"> Use their Discord icon instead</label>\
+         <label class=\"check wide\"><input type=\"checkbox\" name=\"posting\" value=\"{ICON_ON}\"{posting}> Posts by prefix: <code>prefix: text</code> posts as them</label>\
          <label class=\"wide\">Bio, shown on their card<textarea name=\"bio\" maxlength=\"1000\">{bio}</textarea></label>\
          <label class=\"wide\">Staff notes, never shown to players<textarea name=\"notes\" maxlength=\"1000\">{notes}</textarea></label>\
          <div><button type=\"submit\">Save sheet</button></div></form>",
@@ -269,6 +274,7 @@ async fn sheet_page(web: &Web, session: &Session, id: i64, typed: Option<SheetIn
         picture = esc(&values.picture_url),
         bio = esc(&values.bio),
         notes = esc(&values.notes),
+        posting = if values.posting == ICON_ON { " checked" } else { "" },
     );
     let upload = format!(
         "<form method=\"post\" action=\"/a/{t}/characters/{id}/picture\" enctype=\"multipart/form-data\" class=\"row\">\
@@ -278,6 +284,7 @@ async fn sheet_page(web: &Web, session: &Session, id: i64, typed: Option<SheetIn
     );
 
     let carries = carries(&t, &profile, &mcguffins);
+    let expressions = expressions_card(&format!("/a/{t}/characters/{id}/expressions"), row, &web.services.sheets().expressions(id)?);
     let feats = feats_card(&t, web.guild.server(), id, &active, &archived, &names);
     let subtitle = [row.race.as_deref().map(esc), row.tier.map(|tier| format!("Tier {tier}")), row.title.as_deref().map(|title| format!("<i>{}</i>", esc(title)))]
         .into_iter()
@@ -286,13 +293,14 @@ async fn sheet_page(web: &Web, session: &Session, id: i64, typed: Option<SheetIn
         .join(" · ");
     let back = if row.player_id == CAST { format!("<a href=\"/a/{t}/npcs\">← NPCs</a>") } else { format!("<a href=\"/a/{t}/players/{}\">← Their player</a>", row.player_id) };
     let body = format!(
-        "<header class=\"head\">{portrait}<div><p>{back}</p><h1>{name}</h1><p>{subtitle}</p><p class=\"dim\">{whose} · slot {slot}</p></div></header>\
+        "<header class=\"head\">{portrait}<div><p>{back}</p><h1>{name}</h1><p>{subtitle}</p><p class=\"dim\">{whose} · slot {slot} · {posts} posts</p></div></header>\
          <div class=\"cols\"><section class=\"card\"><h2>Sheet</h2>{sheet}</section>\
-         <div style=\"display:grid;gap:18px\"><section class=\"card\"><h2>Picture</h2>{upload}</section>{carries}</div></div>{feats}",
+         <div style=\"display:grid;gap:18px\"><section class=\"card\"><h2>Picture</h2>{upload}</section>{expressions}{carries}</div></div>{feats}",
         portrait = portrait(link.as_deref(), &row.name),
         name = esc(&row.name),
         whose = whose(row, &names),
         slot = row.slot,
+        posts = row.posts,
     );
     let section = if row.player_id == CAST { Section::Npcs } else { Section::Characters };
     Ok(Html(html::page(&session.token, section, &row.name, told.as_ref(), &body)).into_response())
@@ -340,6 +348,100 @@ fn carries(t: &str, profile: &crate::services::characters::Profile, mcguffins: &
         listed(balls),
         listed(items)
     )
+}
+
+/// A character's expressions: each with its picture and colour, a remove button, and a form to add one.
+/// `action` is where the forms post: the admin sheet's, or the player's own page's.
+pub(super) fn expressions_card(action: &str, row: &CharacterRow, list: &[ExpressionRow]) -> String {
+    let action = esc(action);
+    let prefix = row.prefix.as_deref().unwrap_or("prefix");
+    let rows: String = list
+        .iter()
+        .map(|e| {
+            let color = e.color.map(|c| format!(" <span class=\"tag\">#{c:06X}</span>")).unwrap_or_default();
+            format!(
+                "<li class=\"inline\"><img class=\"pic\" src=\"{}\" alt=\"\"> <code>{}:{}</code>{color}<form method=\"post\" action=\"{action}/remove\">\
+                 <input type=\"hidden\" name=\"name\" value=\"{}\"><button class=\"quiet\" type=\"submit\">Remove</button></form></li>",
+                esc(&e.url),
+                esc(prefix),
+                esc(&e.name),
+                esc(&e.name)
+            )
+        })
+        .collect();
+    let list = if rows.is_empty() { "<p class=\"dim\">None yet.</p>".to_owned() } else { format!("<ul style=\"margin:0;padding-left:0;list-style:none;display:grid;gap:6px\">{rows}</ul>") };
+    format!(
+        "<section class=\"card\"><h2>Expressions</h2><p class=\"dim small\">Other pictures to post with: <code>{p}:happy text</code>. An unknown one posts with the main picture.</p>{list}\
+         <form method=\"post\" action=\"{action}\" class=\"grid\"><label>Name<input name=\"name\" maxlength=\"20\" placeholder=\"happy\" required></label>\
+         <label>Image link (https)<input name=\"url\" maxlength=\"400\" placeholder=\"https://…\" required></label>\
+         <label>Colour bar, optional<input name=\"color\" maxlength=\"7\" placeholder=\"#C0392B\"></label>\
+         <div><button type=\"submit\">Save expression</button></div></form></section>",
+        p = esc(prefix)
+    )
+}
+
+/// Why an expression was refused, in a sentence.
+pub(super) fn expression_refusal(outcome: &ExpressionSaved) -> &'static str {
+    match outcome {
+        ExpressionSaved::Done(_) => "",
+        ExpressionSaved::NotFound => GONE,
+        ExpressionSaved::BadName => "Name: 1 to 20 letters, digits, - or _.",
+        ExpressionSaved::BadLink => "Image: an https:// link.",
+        ExpressionSaved::BadColor => "Colour: six hex digits, like #C0392B, or blank.",
+    }
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+pub(super) struct ExpressionInput {
+    pub(super) name: String,
+    pub(super) url: String,
+    pub(super) color: String,
+}
+
+pub(super) async fn add_expression(State(web): State<Web>, Path((token, id)): Path<(String, i64)>, Form(input): Form<ExpressionInput>) -> Page {
+    let Some(session) = web.staff(&token) else {
+        return Ok(expired());
+    };
+    let path = format!("/characters/{id}");
+    if !web.logged()? {
+        return Ok(web.back(&session, &path, refused(NO_MOD_LOG)));
+    }
+    let Some(row) = web.services.sheets().get(id)? else {
+        return Ok(web.back(&session, "/characters", refused(GONE)));
+    };
+    let notice = match web.services.sheets().save_expression(id, &input.name, &input.url, &input.color)? {
+        ExpressionSaved::Done(e) => {
+            web.audit(&format!("🎭 <@{}> saved expression **{}** for **{}** ({})", session.staff, plain(&e.name), plain(&row.name), owner(row.player_id)));
+            done(format!("Saved {}'s {} expression.", row.name, e.name))
+        }
+        other => refused(expression_refusal(&other)),
+    };
+    Ok(web.back(&session, &path, notice))
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+pub(super) struct NameInput {
+    pub(super) name: String,
+}
+
+pub(super) async fn remove_expression(State(web): State<Web>, Path((token, id)): Path<(String, i64)>, Form(input): Form<NameInput>) -> Page {
+    let Some(session) = web.staff(&token) else {
+        return Ok(expired());
+    };
+    let path = format!("/characters/{id}");
+    if !web.logged()? {
+        return Ok(web.back(&session, &path, refused(NO_MOD_LOG)));
+    }
+    let Some(row) = web.services.sheets().get(id)? else {
+        return Ok(web.back(&session, "/characters", refused(GONE)));
+    };
+    if !web.services.sheets().remove_expression(id, &input.name)? {
+        return Ok(web.back(&session, &path, refused("No such expression.")));
+    }
+    web.audit(&format!("🎭 <@{}> removed expression **{}** from **{}** ({})", session.staff, plain(input.name.trim()), plain(&row.name), owner(row.player_id)));
+    Ok(web.back(&session, &path, done("Removed.")))
 }
 
 fn post_links(server: u64, feat: &FeatView) -> String {

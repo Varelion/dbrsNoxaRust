@@ -26,9 +26,11 @@ pub(crate) mod guild;
 pub(crate) mod links;
 pub(crate) mod mcguffins;
 pub(crate) mod players;
+pub(crate) mod proxy;
 pub(crate) mod settings;
 pub(crate) mod sheets;
 pub(crate) mod spirit;
+pub(crate) mod tutorials;
 pub(crate) mod worlds;
 
 use std::path::Path;
@@ -120,6 +122,14 @@ impl Services {
 
     pub(crate) const fn links(&self) -> &links::Links {
         &self.links
+    }
+
+    pub(crate) const fn proxy(&self) -> proxy::Proxy<'_> {
+        proxy::Proxy::new(&self.store, &self.clock)
+    }
+
+    pub(crate) const fn tutorials(&self) -> tutorials::Tutorials<'_> {
+        tutorials::Tutorials::new(&self.store, &self.clock)
     }
 
     pub(crate) const fn worlds(&self) -> worlds::Worlds<'_> {

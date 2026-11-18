@@ -157,6 +157,31 @@ pub(crate) async fn sealed(host: &str, port: u16, alpn: &[u8]) -> Result<TlsStre
     Err(last.unwrap_or_else(|| anyhow::anyhow!("{host}: nothing to dial")))
 }
 
+/// An https file, up to `max` bytes: a Discord attachment, to post it again. Plain TLS, the name in
+/// the clear: it is Discord's CDN, which the bot reaches anyway.
+pub(crate) async fn fetch(url: &str, max: usize) -> Result<Vec<u8>> {
+    let uri: hyper::Uri = url.parse().context("not a URL")?;
+    let (Some("https"), Some(host)) = (uri.scheme_str(), uri.host()) else {
+        bail!("only https files are fetched");
+    };
+    let path = uri.path_and_query().map_or("/", hyper::http::uri::PathAndQuery::as_str).to_owned();
+    let mut config = tls13()?.with_platform_verifier()?.with_no_client_auth();
+    config.alpn_protocols = vec![HTTP1.to_vec()];
+    let name = ServerName::try_from(host.to_owned()).context("not a host name")?;
+    let tcp = timed("reaching the file's host", TcpStream::connect((host, HTTPS_PORT))).await??;
+    let tls = timed("the file host's handshake", TlsConnector::from(Arc::new(config)).connect(name, tcp)).await??;
+
+    let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(tls)).await.context("talking HTTP to the file host")?;
+    tokio::spawn(connection);
+    let request = hyper::Request::get(path).header(hyper::header::HOST, host).body(Empty::<Bytes>::new())?;
+    let response = timed("the file", sender.send_request(request)).await??;
+    if !response.status().is_success() {
+        bail!("the file host answered {}", response.status());
+    }
+    let body = Limited::new(response.into_body(), max).collect().await.map_err(|source| anyhow::anyhow!("reading the file: {source}"))?;
+    Ok(body.to_bytes().to_vec())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

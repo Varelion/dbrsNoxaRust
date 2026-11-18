@@ -73,6 +73,9 @@ fn admin() -> Admin {
                 Ask::Fresh { pictures, reply } => {
                     reply.send(pictures.into_iter().map(|p| (p.message_id, p.url)).collect()).ok();
                 }
+                Ask::Did { user, did } => {
+                    lines_in.send(format!("did {user} {did:?}")).ok();
+                }
             }
         }
     });
@@ -176,11 +179,11 @@ async fn a_sheet_saves_whole_and_a_refused_save_keeps_what_was_typed() {
     let nova = admin.services.characters().of_player(NOVA_PLAYER).unwrap().remove(0);
 
     let sheet = format!("/characters/{}", nova.id);
-    let page = admin.post(&sheet, "name=Captain+Nova&race=Earthling&tier=9&title=EDF+Commander").await;
+    let page = admin.post(&sheet, "name=Captain+Nova&race=Earthling&tier=9&title=EDF+Commander&posting=on").await;
     assert!(page.contains("Saved: race, tier, title."));
     assert_eq!(admin.line().await, format!("👤 <@{STAFF}> edited **Captain Nova**'s sheet (<@{NOVA_PLAYER}>): race, tier, title · admin pages"));
 
-    let page = admin.post(&sheet, "name=Captain+Nova&race=Saiyan&tier=over+9000").await;
+    let page = admin.post(&sheet, "name=Captain+Nova&race=Saiyan&tier=over+9000&posting=on").await;
     assert!(page.contains("Tier: a whole number"));
     assert!(page.contains("value=\"Saiyan\""));
     assert_eq!(admin.services.sheets().get(nova.id).unwrap().unwrap().race.as_deref(), Some("Earthling"));
@@ -425,4 +428,36 @@ async fn mcguffins_lie_in_a_world_a_channel_or_a_rolled_roleplay_channel_and_lea
     let line = admin.line().await;
     assert!(line.contains("; it no longer lies at random in <#1"), "{line}");
     assert_eq!(admin.services.mcguffins().get(key.id).unwrap().unwrap().place, None);
+}
+
+#[tokio::test]
+async fn a_player_sets_their_prefix_and_expressions_on_their_page_and_the_tutorial_hears_it() {
+    let mut admin = admin();
+    admin.services.settings().set_mod_log(MOD_LOG).unwrap();
+    admin.post(&format!("/players/{NOVA_PLAYER}/characters"), "slot=1&name=Captain+Nova").await;
+    admin.post(&format!("/players/{NOXA_PLAYER}/characters"), "slot=1&name=Noxa").await;
+    admin.line().await;
+    admin.line().await;
+    let nova = admin.services.characters().of_player(NOVA_PLAYER).unwrap().remove(0);
+    let noxa = admin.services.characters().of_player(NOXA_PLAYER).unwrap().remove(0);
+    let home = format!("/p/{}", admin.services.links().issue(NOVA_PLAYER, Access::Player).unwrap());
+
+    let page = admin.post(&format!("{home}/characters/{}/posting", nova.id), "prefix=Nova:&posting=on").await;
+    assert!(page.contains("Captain Nova posts with nova: text"));
+    assert_eq!(admin.line().await, format!("did {NOVA_PLAYER} PrefixSet"));
+    let page = admin.post(&format!("{home}/characters/{}/posting", noxa.id), "prefix=nx&posting=on").await;
+    assert!(page.contains("Pick one of your own characters."));
+
+    let page = admin.post(&format!("{home}/characters/{}/expressions", nova.id), "name=happy&url=https://i.imgur.com/h.png&color=%23C0392B").await;
+    assert!(page.contains("Saved the happy expression."));
+    assert!(page.contains("<code>nova:happy</code>"));
+    let page = admin.post(&format!("{home}/characters/{}/expressions", noxa.id), "name=happy&url=https://i.imgur.com/h.png").await;
+    assert!(page.contains("Pick one of your own characters."));
+    let page = admin.post(&format!("{home}/characters/{}/expressions/remove", nova.id), "name=happy").await;
+    assert!(page.contains("Removed."));
+
+    // Staff edit any sheet's expressions, logged.
+    let page = admin.post(&format!("/characters/{}/expressions", noxa.id), "name=angry&url=https://i.imgur.com/a.png").await;
+    assert!(page.contains("Saved Noxa&#39;s angry expression."));
+    assert!(admin.line().await.contains("saved expression **angry** for **Noxa**"));
 }

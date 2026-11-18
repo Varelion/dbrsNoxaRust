@@ -20,9 +20,12 @@ use axum::response::{Html, IntoResponse, Redirect};
 use serde::Deserialize;
 
 use super::html::{self, Mine, esc, portrait};
+use super::sheets::{ExpressionInput, NameInput, expression_refusal, expressions_card};
 use super::{Page, Web, done, expired, refused};
 use crate::domain::dragon_balls::ball_label;
+use crate::domain::tutorial::Did;
 use crate::services::characters::{Profile, SetActive};
+use crate::services::sheets::{ExpressionSaved, Posting, PostingSaved};
 use crate::services::guild::{Person, Stored, picture_link};
 use crate::services::links::Access;
 
@@ -70,7 +73,24 @@ async fn cards_of(web: &Web, player: u64) -> anyhow::Result<(Vec<Profile>, HashM
     Ok((profiles, fresh))
 }
 
-fn card(m: Option<&Me>, profile: &Profile, picture: Option<&str>, pick: Pick) -> String {
+// A card's own settings, for its player: the prefix it posts with, and its expressions.
+fn own_settings(web: &Web, m: &Me, profile: &Profile) -> anyhow::Result<String> {
+    let c = &profile.character;
+    let posting = format!(
+        "<details><summary><b>Posting</b>: {}</summary><form method=\"post\" action=\"{}\" class=\"grid\">\
+         <label>Prefix<input name=\"prefix\" value=\"{}\" maxlength=\"20\" placeholder=\"nova\" autocomplete=\"off\"></label>\
+         <label class=\"check\"><input type=\"checkbox\" name=\"posting\" value=\"on\"{}> Posts by prefix</label>\
+         <div><button type=\"submit\">Save posting</button></div></form></details>",
+        c.prefix.as_deref().filter(|_| c.posting).map_or_else(|| "off".to_owned(), |p| format!("<code>{}: text</code>", esc(p))),
+        esc(&m.at(&format!("/characters/{}/posting", c.id))),
+        esc(c.prefix.as_deref().unwrap_or_default()),
+        if c.posting { " checked" } else { "" },
+    );
+    let expressions = expressions_card(&m.at(&format!("/characters/{}/expressions", c.id)), c, &web.services.sheets().expressions(c.id)?);
+    Ok(format!("{posting}<details><summary><b>Expressions</b></summary>{expressions}</details>"))
+}
+
+fn card(m: Option<&Me>, profile: &Profile, picture: Option<&str>, pick: Pick, settings: &str) -> String {
     let c = &profile.character;
     let tier = c.tier.map_or_else(|| "tier not set".to_owned(), |t| format!("Tier {t}"));
     let mut lines = vec![format!("<p>{} · {tier}</p>", esc(c.race.as_deref().unwrap_or("Race not set")))];
@@ -101,10 +121,11 @@ fn card(m: Option<&Me>, profile: &Profile, picture: Option<&str>, pick: Pick) ->
     };
     let class = if pick == Pick::Playing { "card playing" } else { "card" };
     format!(
-        "<article class=\"{class}\"><div class=\"head\">{}<div><h2>{}</h2><p class=\"dim small\">Slot {}</p></div></div>{}<p>{carried}</p>{action}</article>",
+        "<article class=\"{class}\"><div class=\"head\">{}<div><h2>{}</h2><p class=\"dim small\">Slot {} · {} posts</p></div></div>{}<p>{carried}</p>{action}{settings}</article>",
         portrait(picture, &c.name),
         esc(&c.name),
         c.slot,
+        c.posts,
         lines.concat()
     )
 }
@@ -139,13 +160,12 @@ pub(super) async fn home(State(web): State<Web>, Path(token): Path<String>) -> P
         format!("<div class=\"scroll\"><table><thead><tr><th>Day</th><th class=\"num\">Change</th><th class=\"num\">Balance</th><th>Why</th></tr></thead><tbody>{ledger}</tbody></table></div>")
     };
 
-    let cards: String = profiles
-        .iter()
-        .map(|p| {
-            let pick = if active == Some(p.character.id) { Pick::Playing } else { Pick::Play };
-            card(Some(&m), p, picture_for(p, &fresh, owner).as_deref(), pick)
-        })
-        .collect();
+    let mut cards = String::new();
+    for p in &profiles {
+        let pick = if active == Some(p.character.id) { Pick::Playing } else { Pick::Play };
+        let settings = own_settings(&web, &m, p)?;
+        cards.push_str(&card(Some(&m), p, picture_for(p, &fresh, owner).as_deref(), pick, &settings));
+    }
     let cards = if cards.is_empty() { "<section class=\"card\"><p>You have no characters yet. Staff add approved ones.</p></section>".to_owned() } else { format!("<div class=\"cards\">{cards}</div>") };
 
     let name = owner.map_or_else(|| "Your page".to_owned(), |p| p.name.clone());
@@ -224,7 +244,7 @@ pub(super) async fn player(State(web): State<Web>, Path((token, player)): Path<(
         return Ok(web.back_to(&m.token, &m.at("/players"), refused("No characters to show for them.")));
     };
     let balance = web.services.spirit().balance(player)?;
-    let cards: String = profiles.iter().map(|p| card(None, p, picture_for(p, &fresh, Some(owner)).as_deref(), Pick::Look)).collect();
+    let cards: String = profiles.iter().map(|p| card(None, p, picture_for(p, &fresh, Some(owner)).as_deref(), Pick::Look, "")).collect();
     let body = format!(
         "<header><p><a href=\"{}\">← Players</a></p><h1>{}</h1><p class=\"dim\">🔮 {balance} Spirit Points · only they pick who they play.</p></header>\
          <div class=\"cards\">{cards}</div>",
@@ -233,4 +253,59 @@ pub(super) async fn player(State(web): State<Web>, Path((token, player)): Path<(
     );
     let told = web.services.links().told(&m.token);
     Ok(Html(html::player_page(&m.token, Mine::Players, &owner.name, told.as_ref(), &body)).into_response())
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+pub(super) struct PostingInput {
+    prefix: String,
+    posting: String,
+}
+
+pub(super) async fn posting(State(web): State<Web>, Path((token, id)): Path<(String, i64)>, Form(input): Form<PostingInput>) -> Page {
+    let Some(m) = me(&web, &token) else {
+        return Ok(expired());
+    };
+    let posting = if input.posting == "on" { Posting::ByPrefix } else { Posting::Off };
+    let notice = match web.services.sheets().set_posting(m.player, id, &input.prefix, posting)? {
+        PostingSaved::Done(row) => {
+            tracing::info!(player = m.player, character = %row.name, prefix = ?row.prefix, "posting set on the web");
+            if row.prefix.is_some() && row.posting {
+                web.guild.did(m.player, Did::PrefixSet);
+            }
+            match row.prefix.as_deref().filter(|_| row.posting) {
+                Some(prefix) => done(format!("{} posts with {prefix}: text", row.name)),
+                None => done(format!("{} posts by prefix no more.", row.name)),
+            }
+        }
+        PostingSaved::NotYours => refused(NOT_YOURS),
+        PostingSaved::BadPrefix(reason) => refused(format!("Prefix: {reason}.")),
+        PostingSaved::PrefixTaken(other) => refused(format!("Your {other} uses that prefix already.")),
+    };
+    Ok(web.back_to(&m.token, &m.at(""), notice))
+}
+
+pub(super) async fn add_expression(State(web): State<Web>, Path((token, id)): Path<(String, i64)>, Form(input): Form<ExpressionInput>) -> Page {
+    let Some(m) = me(&web, &token) else {
+        return Ok(expired());
+    };
+    if web.services.sheets().owned(m.player, id)?.is_none() {
+        return Ok(web.back_to(&m.token, &m.at(""), refused(NOT_YOURS)));
+    }
+    let notice = match web.services.sheets().save_expression(id, &input.name, &input.url, &input.color)? {
+        ExpressionSaved::Done(e) => done(format!("Saved the {} expression.", e.name)),
+        other => refused(expression_refusal(&other)),
+    };
+    Ok(web.back_to(&m.token, &m.at(""), notice))
+}
+
+pub(super) async fn remove_expression(State(web): State<Web>, Path((token, id)): Path<(String, i64)>, Form(input): Form<NameInput>) -> Page {
+    let Some(m) = me(&web, &token) else {
+        return Ok(expired());
+    };
+    if web.services.sheets().owned(m.player, id)?.is_none() {
+        return Ok(web.back_to(&m.token, &m.at(""), refused(NOT_YOURS)));
+    }
+    let notice = if web.services.sheets().remove_expression(id, &input.name)? { done("Removed.") } else { refused("No such expression.") };
+    Ok(web.back_to(&m.token, &m.at(""), notice))
 }

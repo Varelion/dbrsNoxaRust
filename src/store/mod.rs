@@ -8,11 +8,14 @@
 pub(crate) mod balls;
 pub(crate) mod belongings;
 pub(crate) mod characters;
+pub(crate) mod expressions;
 pub(crate) mod feats;
 pub(crate) mod mcguffins;
 pub(crate) mod players;
+pub(crate) mod proxied;
 pub(crate) mod settings;
 pub(crate) mod spirit;
+pub(crate) mod tutorials;
 pub(crate) mod worlds;
 
 use std::path::Path;
@@ -28,6 +31,7 @@ const MIGRATIONS: &[&str] = &[include_str!("../../migrations/0001_init.sql"), in
     include_str!("../../migrations/0004_mcguffins_npcs.sql"),
     include_str!("../../migrations/0005_pictures.sql"),
     include_str!("../../migrations/0006_places.sql"),
+    include_str!("../../migrations/0007_posting.sql"),
 ];
 
 // Waits this long for a lock held by a backup or another reader instead of failing at once.

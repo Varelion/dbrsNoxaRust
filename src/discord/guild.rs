@@ -54,6 +54,20 @@ pub(crate) struct Caches {
     names: Mutex<Names>,
     channels: Mutex<Option<(Instant, Vec<Channel>)>>,
     links: Mutex<HashMap<u64, String>>,
+    cooldowns: Mutex<HashMap<u64, Instant>>,
+}
+
+impl Caches {
+    /// True when the user may act again: their last action was at least `gap` ago.
+    pub(crate) fn cool(&self, user: u64, gap: Duration) -> bool {
+        let mut seen = locked(&self.cooldowns);
+        let now = Instant::now();
+        if seen.get(&user).is_some_and(|at| now.duration_since(*at) < gap) {
+            return false;
+        }
+        seen.insert(user, now);
+        true
+    }
 }
 
 fn locked<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -76,6 +90,9 @@ pub(crate) async fn answer(app: Arc<App>, mut asks: UnboundedReceiver<Ask>) {
             }
             Ask::Fresh { pictures, reply } => {
                 tokio::spawn(async move { reply.send(fresh(&app, pictures).await).ok() });
+            }
+            Ask::Did { user, did } => {
+                tokio::spawn(async move { super::tutorial::observe(&app, user, did).await });
             }
         }
     }

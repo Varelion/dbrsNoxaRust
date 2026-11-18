@@ -22,9 +22,13 @@ pub(crate) struct CharacterRow {
     pub(crate) prefix: Option<String>,
     /// Staff only, never on a card.
     pub(crate) notes: Option<String>,
+    /// Whether "prefix: text" posts as them.
+    pub(crate) posting: bool,
+    /// Roleplay posts made as them.
+    pub(crate) posts: i64,
 }
 
-const COLUMNS: &str = "id, player_id, slot, name, race, tier, title, bio, picture_url, prefix, notes, picture_message";
+const COLUMNS: &str = "id, player_id, slot, name, race, tier, title, bio, picture_url, prefix, notes, picture_message, posting, posts";
 
 fn row_of(row: &Row) -> rusqlite::Result<CharacterRow> {
     Ok(CharacterRow {
@@ -40,6 +44,8 @@ fn row_of(row: &Row) -> rusqlite::Result<CharacterRow> {
         prefix: row.get(9)?,
         notes: row.get(10)?,
         picture_message: row.get::<_, Option<i64>>(11)?.map(from_sql),
+        posting: row.get(12)?,
+        posts: row.get(13)?,
     })
 }
 
@@ -73,7 +79,7 @@ pub(crate) fn of_player(conn: &Connection, player_id: u64) -> rusqlite::Result<V
 
 pub(crate) fn active(conn: &Connection, player_id: u64) -> rusqlite::Result<Option<CharacterRow>> {
     conn.query_row(
-        "SELECT c.id, c.player_id, c.slot, c.name, c.race, c.tier, c.title, c.bio, c.picture_url, c.prefix, c.notes, c.picture_message
+        "SELECT c.id, c.player_id, c.slot, c.name, c.race, c.tier, c.title, c.bio, c.picture_url, c.prefix, c.notes, c.picture_message, c.posting, c.posts
          FROM active_characters a JOIN characters c ON c.id = a.character_id WHERE a.player_id = ?1",
         [to_sql(player_id)],
         row_of,
@@ -92,9 +98,26 @@ pub(crate) fn next_slot(conn: &Connection, player_id: u64) -> rusqlite::Result<i
     conn.query_row("SELECT ifnull(max(slot), 0) + 1 FROM characters WHERE player_id = ?1", [to_sql(player_id)], |row| row.get(0))
 }
 
-/// The character using a prefix, any case.
-pub(crate) fn by_prefix(conn: &Connection, prefix: &str) -> rusqlite::Result<Option<CharacterRow>> {
-    conn.query_row(&format!("SELECT {COLUMNS} FROM characters WHERE lower(prefix) = lower(?1)"), [prefix], row_of).optional()
+/// A player's character using a prefix, any case; the cast is player 0.
+pub(crate) fn by_prefix(conn: &Connection, player_id: u64, prefix: &str) -> rusqlite::Result<Option<CharacterRow>> {
+    conn.query_row(
+        &format!("SELECT {COLUMNS} FROM characters WHERE player_id = ?1 AND lower(prefix) = lower(?2)"),
+        params![to_sql(player_id), prefix],
+        row_of,
+    )
+    .optional()
+}
+
+/// A prefix and whether it posts, set by the character's player.
+pub(crate) fn set_posting(conn: &Connection, id: i64, prefix: Option<&str>, posting: bool) -> rusqlite::Result<()> {
+    conn.execute("UPDATE characters SET prefix = ?2, posting = ?3 WHERE id = ?1", params![id, prefix, posting])?;
+    Ok(())
+}
+
+/// One more roleplay post.
+pub(crate) fn count_post(conn: &Connection, id: i64) -> rusqlite::Result<()> {
+    conn.execute("UPDATE characters SET posts = posts + 1 WHERE id = ?1", [id])?;
+    Ok(())
 }
 
 /// What a sheet edits; every field is written as given.
@@ -108,13 +131,14 @@ pub(crate) struct SheetFields<'a> {
     pub(crate) picture_url: Option<&'a str>,
     pub(crate) picture_message: Option<u64>,
     pub(crate) notes: Option<&'a str>,
+    pub(crate) posting: bool,
 }
 
 pub(crate) fn save_sheet(conn: &Connection, id: i64, f: &SheetFields) -> rusqlite::Result<()> {
     conn.execute(
         "UPDATE characters SET name = ?2, prefix = ?3, race = ?4, tier = ?5, title = ?6, bio = ?7, picture_url = ?8, notes = ?9,
-         picture_message = ?10 WHERE id = ?1",
-        params![id, f.name, f.prefix, f.race, f.tier, f.title, f.bio, f.picture_url, f.notes, f.picture_message.map(to_sql)],
+         picture_message = ?10, posting = ?11 WHERE id = ?1",
+        params![id, f.name, f.prefix, f.race, f.tier, f.title, f.bio, f.picture_url, f.notes, f.picture_message.map(to_sql), f.posting],
     )?;
     Ok(())
 }

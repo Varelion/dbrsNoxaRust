@@ -4,7 +4,9 @@
 //! ```text
 //!   gateway ─► run() ─┬─ GuildCreate / Role*  ─► App::observe       role names, for the staff check
 //!                     ├─ Ready, Resumed, Gateway* ─► logged          connection health
-//!                     ├─ MessageCreate ".…"   ─► dot::handle: .prune (needs the Message Content intent)
+//!                     ├─ MessageCreate        ─► messages::handle: dot commands, posting as characters,
+//!                     │                           Easter eggs, post counts (needs Message Content)
+//!                     ├─ ReactionAdd          ─► proxy::reacted: ❌ deletes, ✏️ edits a post as a character
 //!                     └─ InteractionCreate    ─► interactions::handle (one task each, watched for panics)
 //!                                                   ├─ weblinks   /z_moderator_admin, /mypage: web links, by DM
 //!                                                   ├─ settings   /z_moderator_dbrs
@@ -23,17 +25,23 @@ mod characters;
 mod commands;
 mod ctx;
 mod dot;
+mod eggs;
 mod feats;
 mod guild;
 mod help;
 mod interactions;
+mod messages;
 mod modlog;
+mod places;
 mod profile;
+mod proxy;
 mod settings;
+mod slots;
 mod spirit;
 mod text;
 mod tutorial;
 mod weblinks;
+mod widgets;
 
 use std::future::{Future, IntoFuture as _};
 use std::sync::Arc;
@@ -59,9 +67,8 @@ use app::{App, Places, Reading};
 // Guilds alone brings the server's roles and every interaction. Message text is privileged: asked for
 // only when the Developer Portal allows it, or Discord would close the gateway for good.
 const INTENTS: Intents = Intents::GUILDS;
-const READING: Intents = Intents::GUILD_MESSAGES.union(Intents::MESSAGE_CONTENT);
+const READING: Intents = Intents::GUILD_MESSAGES.union(Intents::MESSAGE_CONTENT).union(Intents::GUILD_MESSAGE_REACTIONS);
 const CONTENT_ALLOWED: ApplicationFlags = ApplicationFlags::GATEWAY_MESSAGE_CONTENT.union(ApplicationFlags::GATEWAY_MESSAGE_CONTENT_LIMITED);
-const DOT: char = '.';
 
 // Only these are decoded; every other event is dropped before it costs memory. Closes always arrive.
 const EVENTS: EventTypeFlags = EventTypeFlags::READY
@@ -73,7 +80,8 @@ const EVENTS: EventTypeFlags = EventTypeFlags::READY
     .union(EventTypeFlags::ROLE_UPDATE)
     .union(EventTypeFlags::ROLE_DELETE)
     .union(EventTypeFlags::INTERACTION_CREATE)
-    .union(EventTypeFlags::MESSAGE_CREATE);
+    .union(EventTypeFlags::MESSAGE_CREATE)
+    .union(EventTypeFlags::REACTION_ADD);
 
 // Start-up calls retry with a growing wait: at boot the network or Discord may not answer yet.
 const RETRY_FIRST: Duration = Duration::from_secs(5);
@@ -166,8 +174,8 @@ pub(crate) async fn run(config: Config, services: Arc<Services>, asks: Unbounded
         app.observe(&event);
         match event {
             Event::InteractionCreate(create) => spawn_interaction(&app, create.0),
-            // Most messages are roleplay: only one that starts with a dot costs a task.
-            Event::MessageCreate(create) if create.content.starts_with(DOT) => spawn_dot(&app, create.message),
+            Event::MessageCreate(create) => spawn_message(&app, create.message),
+            Event::ReactionAdd(added) => spawn_reaction(&app, added.0),
             _ => {}
         }
     }
@@ -194,14 +202,31 @@ fn connection(app: &App, event: &Event) {
     }
 }
 
-// A dot command in its own task and span; a failure is logged with its causes.
-fn spawn_dot(app: &Arc<App>, message: Message) {
+// A message in its own task and span: a dot command, a post as a character, an egg, a post counted.
+fn spawn_message(app: &Arc<App>, message: Message) {
     let span = tracing::info_span!("message", id = message.id.get(), channel = message.channel_id.get(), user = message.author.id.get());
     let app = Arc::clone(app);
     tokio::spawn(
         async move {
-            if let Err(source) = dot::handle(app, message).await {
-                error!(error = ?source, "dot command failed");
+            if let Err(source) = messages::handle(app, message).await {
+                error!(error = ?source, "message handling failed");
+            }
+        }
+        .instrument(span),
+    );
+}
+
+// A reaction, for posts made as characters: ❌ deletes, ✏️ edits.
+fn spawn_reaction(app: &Arc<App>, reaction: twilight_model::gateway::GatewayReaction) {
+    if reaction.guild_id != Some(app.guild_id) {
+        return;
+    }
+    let span = tracing::info_span!("reaction", message = reaction.message_id.get(), user = reaction.user_id.get());
+    let app = Arc::clone(app);
+    tokio::spawn(
+        async move {
+            if let Err(source) = proxy::reacted(&app, &reaction).await {
+                error!(error = ?source, "reaction handling failed");
             }
         }
         .instrument(span),

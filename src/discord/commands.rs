@@ -8,11 +8,12 @@
 //!   /z_moderator_sp        action:give|take|set|grant|history
 //!   /z_moderator_character action:add
 //!   /z_moderator_feat      action:add|edit|link|unlink|archive|restore|list
-//!   /mypage                                      a player's own page, a link by DM: characters, SP
+//!   /mypage                                  a player's own page, a link by DM: characters, posting, SP
+//!   /panel [player] · /set character         the slots, Bot1's panel; who you play
 //!   /profile                                 a character's card, in the channel
-//!   /tutorial [guide:players|staff]          how to use the bot, only to the caller
+//!   /tutorial [guide:players|staff]          learn by doing, in a thread of your own
 //!   /help [topic]                            a guide, or any command's page
-//!   .prune <count>                           a message, not a slash command (dot.rs)
+//!   messages (messages.rs)                   nova: text · .set1 · .cookie · .prune <count> · eggs
 //!   Log feat                                 right-click a post › Apps
 //! ```
 
@@ -25,7 +26,8 @@ use super::ctx::ACTION;
 use super::feats::{FeatSub, FormField};
 use super::settings::SettingsSub;
 use super::help::TOPIC;
-use super::tutorial::{GUIDE, Guide};
+use super::tutorial::GUIDE;
+use crate::domain::tutorial::Track;
 use crate::domain::feats::{FeatCounts, FeatKind, FeatState, NOTE_MAX, REASON_MAX};
 use crate::domain::spirit::{MEMO_MAX, SP_MAX, SpAction};
 use crate::services::characters::{NAME_MAX, SLOT_MAX};
@@ -38,13 +40,15 @@ pub(crate) const PROFILE: &str = "profile";
 pub(crate) const MYPAGE: &str = "mypage";
 pub(crate) const TUTORIAL: &str = "tutorial";
 pub(crate) const HELP: &str = "help";
+pub(crate) const PANEL: &str = "panel";
+pub(crate) const SET: &str = "set";
 pub(crate) const FEAT: &str = "z_moderator_feat";
 pub(crate) const LOG_FEAT: &str = "Log feat";
 
 pub(crate) const HISTORY: &str = "history";
 
 pub(crate) fn all() -> Vec<Command> {
-    vec![admin(), dbrs(), sp(), character(), mypage(), profile(), tutorial(), help(), feat(), log_feat()]
+    vec![admin(), dbrs(), sp(), character(), mypage(), panel(), set(), profile(), tutorial(), help(), feat(), log_feat()]
 }
 
 // The verb, picked from a list: (shown, value) pairs.
@@ -96,8 +100,20 @@ fn character() -> Command {
 }
 
 fn tutorial() -> Command {
-    CommandBuilder::new(TUTORIAL, "How to use the bot, step by step, only to you", CommandType::ChatInput)
-        .option(StringBuilder::new(GUIDE, "Which guide; players when left out").choices(Guide::ALL.iter().map(|g| (g.label(), g.key()))))
+    CommandBuilder::new(TUTORIAL, "Learn the bot by doing it: one task at a time, in a thread of your own", CommandType::ChatInput)
+        .option(StringBuilder::new(GUIDE, "Which track; players when left out").choices(Track::ALL.iter().map(|t| (t.label(), t.key()))))
+        .build()
+}
+
+fn panel() -> Command {
+    CommandBuilder::new(PANEL, "Your character slots; press a number to play one", CommandType::ChatInput)
+        .option(UserBuilder::new("player", "Look at another player's instead"))
+        .build()
+}
+
+fn set() -> Command {
+    CommandBuilder::new(SET, "Play one of your characters: .set1 … .set10 work too", CommandType::ChatInput)
+        .option(StringBuilder::new("character", "One of yours").autocomplete(true).required(true))
         .build()
 }
 
