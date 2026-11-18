@@ -49,13 +49,19 @@ enum Dot {
 }
 
 impl Dot {
-    // ".prune 10", ".PRUNE 10": the command; "pruned it" or a word after it: not one.
+    // ".prune 10", ".PRUNE 10", ".prune10": the command; ".pruned" or a word before it: not one.
     fn of(content: &str) -> Option<Self> {
         let mut words = content.split_whitespace();
-        if !words.next()?.eq_ignore_ascii_case(PRUNE) {
+        let first = words.next()?.to_lowercase();
+        let joined = first.strip_prefix(PRUNE)?;
+        let count = if joined.is_empty() {
+            words.next()
+        } else if joined.bytes().all(|b| b.is_ascii_digit()) {
+            Some(joined)
+        } else {
             return None;
-        }
-        let count = words.next().and_then(|w| w.parse::<u16>().ok()).filter(|n| (1..=PRUNE_MAX).contains(n));
+        };
+        let count = count.and_then(|w| w.parse::<u16>().ok()).filter(|n| (1..=PRUNE_MAX).contains(n));
         Some(Self::Prune(count))
     }
 }
@@ -182,6 +188,10 @@ mod tests {
         assert_eq!(Dot::of(".prune 101"), Some(Dot::Prune(None)));
         assert_eq!(Dot::of(".prune ten"), Some(Dot::Prune(None)));
         assert_eq!(Dot::of(".pruned 10"), None);
+        assert_eq!(Dot::of(".prune10"), Some(Dot::Prune(Some(10))));
+        assert_eq!(Dot::of(".PRUNE100"), Some(Dot::Prune(Some(100))));
+        assert_eq!(Dot::of(".prune101"), Some(Dot::Prune(None)));
+        assert_eq!(Dot::of(".prune10x"), None);
         assert_eq!(Dot::of("he said .prune 10"), None);
         assert_eq!(Dot::of(""), None);
     }
