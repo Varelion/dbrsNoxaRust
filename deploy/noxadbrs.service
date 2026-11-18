@@ -1,0 +1,38 @@
+# /etc/systemd/system/noxadbrs.service: noxaDBRS on the Pi.
+#   sudo systemctl enable --now noxadbrs    start now and at every boot
+#   journalctl -u noxadbrs -f               its log, live
+#   journalctl -u noxadbrs -p warning       only warnings and errors
+#   journalctl -u noxadbrs -g 123456        the failure a user's "ref 123456" points at
+[Unit]
+Description=noxaDBRS, Dragon Ball: Rising Spirit's Discord bot
+After=network-online.target
+Wants=network-online.target
+# Starts at boot once the network is up; network trouble at start is retried inside the bot.
+# A crash loop (a bad token, a revoked intent) stops after 10 tries in 5 minutes instead of hammering Discord.
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+User=noxadbrs
+WorkingDirectory=/opt/noxadbrs
+EnvironmentFile=/opt/noxadbrs/.env
+ExecStart=/opt/noxadbrs/noxadbrs
+Restart=always
+RestartSec=10
+SyslogIdentifier=noxadbrs
+# Backtraces in panic lines.
+Environment=RUST_BACKTRACE=1
+
+# Locked down: it writes only its own folder.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/noxadbrs
+
+# A leak restarts the bot instead of pushing the Pi into swap.
+MemoryHigh=64M
+MemoryMax=128M
+
+[Install]
+WantedBy=multi-user.target
