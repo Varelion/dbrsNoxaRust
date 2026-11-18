@@ -53,8 +53,16 @@ pub(crate) struct Upload {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Uploaded {
+    pub(crate) channel_id: u64,
     pub(crate) message_id: u64,
     pub(crate) url: String,
+}
+
+impl Uploaded {
+    /// The upload's message, for a mod log line: staff open it to see the picture.
+    pub(crate) fn jump(&self, server: u64) -> String {
+        format!("https://discord.com/channels/{server}/{}/{}", self.channel_id, self.message_id)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -67,25 +75,12 @@ pub(crate) enum UploadRefused {
     Gone,
 }
 
-/// An uploaded picture, as stored: its message, and the link it had last.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Stored {
-    pub(crate) message_id: u64,
-    pub(crate) url: String,
-}
-
-impl Stored {
-    pub(crate) fn of(row: &CharacterRow) -> Option<Self> {
-        Some(Self { message_id: row.picture_message?, url: row.picture_url.clone()? })
-    }
-}
-
 pub(crate) enum Ask {
     Audit(String),
     People { users: Vec<u64>, reply: oneshot::Sender<HashMap<u64, Person>> },
     Channels { reply: oneshot::Sender<Vec<Channel>> },
     Upload { upload: Upload, reply: oneshot::Sender<Result<Uploaded, UploadRefused>> },
-    Fresh { pictures: Vec<Stored>, reply: oneshot::Sender<HashMap<u64, String>> },
+    Fresh { links: Vec<String>, reply: oneshot::Sender<HashMap<String, String>> },
     /// Something a person did on the web, for their tutorial.
     Did { user: u64, did: Did },
 }
@@ -137,12 +132,13 @@ impl Guild {
         self.ask(|reply| Ask::Upload { upload, reply }).await.unwrap_or(Err(UploadRefused::Gone))
     }
 
-    /// A working link for each uploaded picture, by message id; one that cannot be refreshed is left out.
-    pub(crate) async fn fresh(&self, pictures: Vec<Stored>) -> HashMap<u64, String> {
-        if pictures.is_empty() {
+    /// A working link for each Discord link that expires, keyed by the stored one. A link that never
+    /// expires, or cannot be signed again, is left out: use it as it is.
+    pub(crate) async fn fresh(&self, links: Vec<String>) -> HashMap<String, String> {
+        if links.is_empty() {
             return HashMap::new();
         }
-        self.ask(|reply| Ask::Fresh { pictures, reply }).await.unwrap_or_default()
+        self.ask(|reply| Ask::Fresh { links, reply }).await.unwrap_or_default()
     }
 
     async fn ask<T>(&self, make: impl FnOnce(oneshot::Sender<T>) -> Ask) -> Option<T> {
@@ -152,12 +148,14 @@ impl Guild {
     }
 }
 
-/// The link to show for a character's picture: a fresh one for an upload, else its own link.
-pub(crate) fn picture_link(row: &CharacterRow, fresh: &HashMap<u64, String>) -> Option<String> {
-    match row.picture_message {
-        Some(message) => fresh.get(&message).cloned().or_else(|| row.picture_url.clone()),
-        None => row.picture_url.clone(),
-    }
+/// The link to show: its fresh one, if it was signed again, else itself.
+pub(crate) fn fresh_or(url: &str, fresh: &HashMap<String, String>) -> String {
+    fresh.get(url).cloned().unwrap_or_else(|| url.to_owned())
+}
+
+/// The link to show for a character's picture, or None: their owner's icon.
+pub(crate) fn picture_link(row: &CharacterRow, fresh: &HashMap<String, String>) -> Option<String> {
+    row.picture_url.as_deref().map(|url| fresh_or(url, fresh))
 }
 
 #[cfg(test)]

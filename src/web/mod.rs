@@ -5,6 +5,7 @@
 //! ```text
 //!   GET  /p/<token>                                a player: their characters, who they play, Spirit Points
 //!   POST /p/<token>/play                           play another of their characters
+//!   POST /p/<token>/characters/<id>/picture|expressions/upload  upload their character's picture, an expression
 //!   GET  /p/<token>/shop   POST …/shop/<id>/buy    the shop: buy with Spirit Points
 //!   GET  /p/<token>/players[/<id>]                 everyone's characters, as cards
 //!   GET  /a/<token>                                home: counts, mod log
@@ -12,6 +13,7 @@
 //!   POST /a/<token>/players/<id>/sp|characters|inventory  change Spirit Points, add a character, set what they own
 //!   GET  /a/<token>/characters[/<id>]              every character, one sheet: belongings, feats
 //!   POST /a/<token>/characters/<id>[/picture|feats|mcguffins]  save, upload a picture, log a feat, give
+//!   POST /a/<token>/characters/<id>/expressions[/upload|remove]  add an expression by link or upload, remove
 //!   GET  /a/<token>/npcs     POST /a/<token>/npcs  the cast, add an NPC
 //!   POST /a/<token>/feats/<id>/archive|restore
 //!   GET  /a/<token>/mcguffins[/<id>]               POST …/place|give|take|retire, create, edit
@@ -33,6 +35,7 @@ mod players;
 pub(crate) mod relay;
 mod sheets;
 mod shop;
+mod uploads;
 mod worlds;
 
 use std::net::SocketAddr;
@@ -152,7 +155,7 @@ fn refused(text: impl Into<String>) -> Notice {
 }
 
 pub(crate) fn routes(services: Arc<Services>, guild: Guild) -> Router {
-    let upload = post(sheets::upload).layer(DefaultBodyLimit::max(UPLOAD_BODY_MAX));
+    let limit = DefaultBodyLimit::max(UPLOAD_BODY_MAX);
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route("/a/{token}", get(home))
@@ -164,11 +167,12 @@ pub(crate) fn routes(services: Arc<Services>, guild: Guild) -> Router {
         .route("/a/{token}/players/{player}/inventory", post(players::inventory))
         .route("/a/{token}/characters", get(sheets::list))
         .route("/a/{token}/characters/{id}", get(sheets::show).post(sheets::save))
-        .route("/a/{token}/characters/{id}/picture", upload)
+        .route("/a/{token}/characters/{id}/picture", post(uploads::staff_picture).layer(limit))
         .route("/a/{token}/characters/{id}/feats", post(sheets::add_feat))
         .route("/a/{token}/characters/{id}/mcguffins", post(sheets::give_mcguffin))
         .route("/a/{token}/characters/{id}/expressions", post(sheets::add_expression))
         .route("/a/{token}/characters/{id}/expressions/remove", post(sheets::remove_expression))
+        .route("/a/{token}/characters/{id}/expressions/upload", post(uploads::staff_expression).layer(limit))
         .route("/a/{token}/npcs", get(sheets::npcs).post(sheets::add_npc))
         .route("/a/{token}/feats/{id}/archive", post(sheets::archive))
         .route("/a/{token}/feats/{id}/restore", post(sheets::restore))
@@ -195,6 +199,8 @@ pub(crate) fn routes(services: Arc<Services>, guild: Guild) -> Router {
         .route("/p/{token}/characters/{id}/posting", post(mypage::posting))
         .route("/p/{token}/characters/{id}/expressions", post(mypage::add_expression))
         .route("/p/{token}/characters/{id}/expressions/remove", post(mypage::remove_expression))
+        .route("/p/{token}/characters/{id}/picture", post(uploads::my_picture).layer(limit))
+        .route("/p/{token}/characters/{id}/expressions/upload", post(uploads::my_expression).layer(limit))
         .route("/p/{token}/players", get(mypage::players))
         .route("/p/{token}/players/{player}", get(mypage::player))
         .layer(axum::middleware::map_response(secured))

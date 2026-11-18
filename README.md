@@ -47,10 +47,11 @@ cookies: the token is the login, and a player's link never opens the admin pages
 | Shop | emoji items for Spirit Points: add, edit, hide, remove; a player's page sets what they own |
 | Dragon Balls | search areas (categories, channels), the roll, where each ball hides, scatter |
 
-| Player page (`/mypage`) | your characters as cards, who you play (one press), your Spirit Points and ledger, the shop and your inventory, everyone else's cards |
+| Player page (`/mypage`) | your characters as cards, who you play (one press), their picture and expressions (link or upload), your Spirit Points and ledger, the shop and your inventory, everyone else's cards |
 
-An uploaded picture is posted to `PICTURES_CHANNEL` with the image attached; its link expires, so the
-bot fetches a fresh one from that message when needed. The bot needs View Channel, Send Messages,
+An uploaded picture or expression, by staff or a player, is posted to `PICTURES_CHANNEL` with the
+image attached, and the mod log links that message. Discord's links expire, so before using one
+(typed or uploaded) the bot has Discord sign it again (`POST attachments/refresh-urls`). The bot needs View Channel, Send Messages,
 Attach Files and Read Message History there.
 
 ## What the network sees

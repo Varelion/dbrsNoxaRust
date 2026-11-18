@@ -25,13 +25,14 @@ use serde::Deserialize;
 
 use super::html::{self, Mine, esc, portrait};
 use super::sheets::{ExpressionInput, NameInput, expression_refusal, expressions_card};
+use super::uploads::picture_form;
 use super::{Page, Web, done, expired, refused};
 use crate::domain::dragon_balls::ball_label;
 use crate::domain::shop::{BUY_MAX, most_owned, price_label};
 use crate::domain::tutorial::Did;
 use crate::services::characters::{Profile, SetActive};
 use crate::services::sheets::{ExpressionSaved, Posting, PostingSaved};
-use crate::services::guild::{Person, Stored, picture_link};
+use crate::services::guild::{Person, picture_link};
 use crate::services::links::Access;
 use crate::services::shop::{Bought, Shelf};
 use crate::store::shop::ItemRow;
@@ -70,7 +71,7 @@ enum Pick {
 }
 
 // Every character of a player with what they carry, and the link to show for each picture.
-async fn cards_of(web: &Web, player: u64) -> anyhow::Result<(Vec<Profile>, HashMap<u64, String>)> {
+async fn cards_of(web: &Web, player: u64) -> anyhow::Result<(Vec<Profile>, HashMap<String, String>)> {
     let characters = web.services.characters();
     let mut profiles = Vec::new();
     for row in characters.of_player(player)? {
@@ -78,12 +79,12 @@ async fn cards_of(web: &Web, player: u64) -> anyhow::Result<(Vec<Profile>, HashM
             profiles.push(profile);
         }
     }
-    let fresh = web.guild.fresh(profiles.iter().filter_map(|p| Stored::of(&p.character)).collect()).await;
+    let fresh = web.guild.fresh(profiles.iter().filter_map(|p| p.character.picture_url.clone()).collect()).await;
     Ok((profiles, fresh))
 }
 
-// A card's own settings, for its player: the prefix it posts with, and its expressions.
-fn own_settings(web: &Web, m: &Me, profile: &Profile) -> anyhow::Result<String> {
+// A card's own settings, for its player: its picture, the prefix it posts with, and its expressions.
+async fn own_settings(web: &Web, m: &Me, profile: &Profile) -> anyhow::Result<String> {
     let c = &profile.character;
     let posting = format!(
         "<details><summary><b>Posting</b>: {}</summary><form method=\"post\" action=\"{}\" class=\"grid\">\
@@ -95,8 +96,11 @@ fn own_settings(web: &Web, m: &Me, profile: &Profile) -> anyhow::Result<String> 
         esc(c.prefix.as_deref().unwrap_or_default()),
         if c.posting { " checked" } else { "" },
     );
-    let expressions = expressions_card(&m.at(&format!("/characters/{}/expressions", c.id)), c, &web.services.sheets().expressions(c.id)?);
-    Ok(format!("{posting}<details><summary><b>Expressions</b></summary>{expressions}</details>"))
+    let list = web.services.sheets().expressions(c.id)?;
+    let fresh = web.guild.fresh(list.iter().map(|e| e.url.clone()).collect()).await;
+    let expressions = expressions_card(&m.at(&format!("/characters/{}/expressions", c.id)), c, &list, &fresh);
+    let picture = picture_form(&m.at(&format!("/characters/{}/picture", c.id)));
+    Ok(format!("<details><summary><b>Picture</b></summary>{picture}</details>{posting}<details><summary><b>Expressions</b></summary>{expressions}</details>"))
 }
 
 fn card(m: Option<&Me>, profile: &Profile, picture: Option<&str>, pick: Pick, settings: &str) -> String {
@@ -140,7 +144,7 @@ fn card(m: Option<&Me>, profile: &Profile, picture: Option<&str>, pick: Pick, se
 }
 
 // A card's picture: an upload's fresh link, a typed link, else the player's Discord icon.
-fn picture_for(profile: &Profile, fresh: &HashMap<u64, String>, owner: Option<&Person>) -> Option<String> {
+fn picture_for(profile: &Profile, fresh: &HashMap<String, String>, owner: Option<&Person>) -> Option<String> {
     picture_link(&profile.character, fresh).or_else(|| owner.map(|p| p.icon.clone()))
 }
 
@@ -172,7 +176,7 @@ pub(super) async fn home(State(web): State<Web>, Path(token): Path<String>) -> P
     let mut cards = String::new();
     for p in &profiles {
         let pick = if active == Some(p.character.id) { Pick::Playing } else { Pick::Play };
-        let settings = own_settings(&web, &m, p)?;
+        let settings = own_settings(&web, &m, p).await?;
         cards.push_str(&card(Some(&m), p, picture_for(p, &fresh, owner).as_deref(), pick, &settings));
     }
     let cards = if cards.is_empty() { "<section class=\"card\"><p>You have no characters yet. Staff add approved ones.</p></section>".to_owned() } else { format!("<div class=\"cards\">{cards}</div>") };

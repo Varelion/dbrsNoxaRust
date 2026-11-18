@@ -53,9 +53,15 @@ pub(crate) fn kind_of(bytes: &[u8]) -> Option<ImageKind> {
     None
 }
 
+// Discord's own hosts: only their links are signed, and only they can be signed again.
+const DISCORD_HOSTS: [&str; 2] = ["https://cdn.discordapp.com/", "https://media.discordapp.net/"];
+
 /// When a signed attachment link stops working, in seconds since the epoch; None for a link that never does.
 pub(crate) fn expires_at(url: &str) -> Option<u64> {
     const HEX: u32 = 16;
+    if !DISCORD_HOSTS.iter().any(|host| url.starts_with(host)) {
+        return None;
+    }
     let (_, query) = url.split_once('?')?;
     let ex = query.split('&').find_map(|pair| pair.strip_prefix("ex="))?;
     u64::from_str_radix(ex, HEX).ok()
@@ -82,5 +88,6 @@ mod tests {
         assert_eq!(expires_at(url), Some(0x6790_a1b2));
         assert_eq!(expires_at("https://i.imgur.com/nova.png"), None);
         assert_eq!(expires_at("https://cdn.discordapp.com/x.png?ex=zz"), None);
+        assert_eq!(expires_at("https://example.com/x.png?ex=6790a1b2"), None);
     }
 }

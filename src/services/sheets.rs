@@ -64,6 +64,14 @@ pub(crate) enum ExpressionSaved {
     BadColor,
 }
 
+/// Why an expression's name or colour is refused, checked before its image is uploaded; None: fine.
+pub(crate) fn expression_refused(name: &str, color: &str) -> Option<ExpressionSaved> {
+    if clean_expression(name).is_none() {
+        return Some(ExpressionSaved::BadName);
+    }
+    parse_color(color).is_err().then_some(ExpressionSaved::BadColor)
+}
+
 /// Which sheet a save writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Target {
@@ -331,6 +339,9 @@ mod tests {
         assert_eq!(sheets.expressions(yenma.id).unwrap().len(), 1);
         assert!(sheets.remove_expression(yenma.id, "HAPPY").unwrap());
         assert!(sheets.expressions(yenma.id).unwrap().is_empty());
+        assert_eq!(expression_refused("two words", ""), Some(ExpressionSaved::BadName));
+        assert_eq!(expression_refused("sad", "blue"), Some(ExpressionSaved::BadColor));
+        assert_eq!(expression_refused("Sad", "#C0392B"), None);
     }
 
     fn form(name: &str, prefix: &str) -> SheetForm {

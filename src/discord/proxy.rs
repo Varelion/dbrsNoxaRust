@@ -31,7 +31,7 @@ use twilight_util::builder::embed::EmbedBuilder;
 
 use super::app::App;
 use super::ctx::Ctx;
-use super::guild::picture_of;
+use super::guild::{fresh_link, picture_of};
 use super::places;
 use super::profile::icon_url;
 use super::widgets::{TextSpec, button, field, labelled, row, text_input};
@@ -133,7 +133,7 @@ async fn files_of(message: &Message) -> Vec<Attachment> {
 // The picture a post goes out with: the expression's, the character's, else (a player's) their icon.
 async fn avatar_of(app: &App, message: &Message, found: &Found) -> Option<String> {
     if let Some(expression) = &found.expression {
-        return Some(expression.url.clone());
+        return Some(fresh_link(app, &expression.url).await);
     }
     if let Some(picture) = picture_of(app, &found.character).await {
         return Some(picture);

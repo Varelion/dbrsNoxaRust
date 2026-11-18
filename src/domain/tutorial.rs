@@ -133,7 +133,7 @@ const PLAYERS: &[Step] = &[
     Step { id: "dotset", title: "The quick switch", task: "Type **`.set1`** to play slot 1 (`.set2` for slot 2, and so on).", expect: Expect::DotSet },
     Step { id: "prefix", title: "A prefix", task: "On your page, under a character's **Posting**, give them a prefix, like `nova`, and press **Save posting**.", expect: Expect::PrefixSet },
     Step { id: "proxy", title: "Post as them", task: "Type **`<prefix>: Hello!`** here, with your prefix. The bot posts it under their name and picture.", expect: Expect::Proxied },
-    Step { id: "expression", title: "An expression", task: "On your page, add an expression: a name like `happy` and an image link. Then post **`<prefix>:happy Hi!`**.", expect: Expect::ProxiedWithExpression },
+    Step { id: "expression", title: "An expression", task: "On your page, add an expression: a name like `happy` and an image, a link or an upload. Then post **`<prefix>:happy Hi!`**.", expect: Expect::ProxiedWithExpression },
     Step { id: "edit", title: "Edit a post", task: "React ✏️ to one of your posts, press **Edit**, and change the text.", expect: Expect::ProxyEdited },
     Step { id: "delete", title: "Delete a post", task: "React ❌ to one of your posts: it is gone, every part of it.", expect: Expect::ProxyDeleted },
     Step { id: "profile", title: "Show a card", task: "Type **`/profile`**: everyone in the channel sees your character's card.", expect: Expect::Command("profile") },

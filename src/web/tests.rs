@@ -22,6 +22,8 @@ const MOD_LOG: u64 = 60;
 const BODY_MAX: usize = 1 << 20;
 const FORM: &str = "application/x-www-form-urlencoded";
 const UPLOADED: u64 = 77;
+const PICTURES: u64 = 5;
+const JUMP: &str = "https://discord.com/channels/1/5/77";
 const WAIT: Duration = Duration::from_secs(2);
 
 struct Admin {
@@ -68,10 +70,10 @@ fn admin() -> Admin {
                 }
                 Ask::Upload { upload, reply } => {
                     let url = format!("https://cdn.discordapp.com/attachments/5/{UPLOADED}/{}.{}?ex=ffffffff", upload.stem, upload.kind.extension());
-                    reply.send(Ok(Uploaded { message_id: UPLOADED, url })).ok();
+                    reply.send(Ok(Uploaded { channel_id: PICTURES, message_id: UPLOADED, url })).ok();
                 }
-                Ask::Fresh { pictures, reply } => {
-                    reply.send(pictures.into_iter().map(|p| (p.message_id, p.url)).collect()).ok();
+                Ask::Fresh { links, reply } => {
+                    reply.send(links.into_iter().map(|l| (l.clone(), format!("{l}&fresh"))).collect()).ok();
                 }
                 Ask::Did { user, did } => {
                     lines_in.send(format!("did {user} {did:?}")).ok();
@@ -261,9 +263,20 @@ async fn dragon_ball_areas_rolls_and_hiding_places_are_set_from_the_page() {
     assert!(view.balls.iter().all(|b| matches!(b.channel_id, Some(11 | 12))));
 }
 
+const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR";
+
 fn multipart(bytes: &[u8]) -> (String, Vec<u8>) {
+    with_texts(&[], bytes)
+}
+
+// A form with text fields, then the picture.
+fn with_texts(texts: &[(&str, &str)], bytes: &[u8]) -> (String, Vec<u8>) {
     let boundary = "noxa";
-    let mut body = format!("--{boundary}\r\ncontent-disposition: form-data; name=\"picture\"; filename=\"nova.png\"\r\ncontent-type: image/png\r\n\r\n").into_bytes();
+    let mut body = Vec::new();
+    for (name, value) in texts {
+        body.extend_from_slice(format!("--{boundary}\r\ncontent-disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n").as_bytes());
+    }
+    body.extend_from_slice(format!("--{boundary}\r\ncontent-disposition: form-data; name=\"picture\"; filename=\"nova.png\"\r\ncontent-type: image/png\r\n\r\n").as_bytes());
     body.extend_from_slice(bytes);
     body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
     (format!("multipart/form-data; boundary={boundary}"), body)
@@ -283,16 +296,58 @@ async fn a_picture_uploads_in_the_background_and_becomes_the_sheets() {
     assert_eq!(status, StatusCode::SEE_OTHER);
     assert!(admin.get(&format!("/characters/{}", nova.id)).await.contains("not a PNG, JPEG, GIF or WebP"));
 
-    let (kind, body) = multipart(b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR");
+    let (kind, body) = multipart(PNG);
     let (status, _, _) = admin.call("POST", &path, Some((&kind, body))).await;
     assert_eq!(status, StatusCode::SEE_OTHER);
-    assert_eq!(admin.line().await, format!("🖼️ <@{STAFF}> uploaded a picture for **Captain Nova** (<@{NOVA_PLAYER}>) · admin pages"));
+    assert_eq!(admin.line().await, format!("🖼️ <@{STAFF}> uploaded a picture for **Captain Nova** (<@{NOVA_PLAYER}>): {JUMP} · admin pages"));
 
     let row = admin.services.sheets().get(nova.id).unwrap().unwrap();
     assert_eq!(row.picture_message, Some(UPLOADED));
     let page = admin.get(&format!("/characters/{}", nova.id)).await;
-    assert!(page.contains(&format!("src=\"https://cdn.discordapp.com/attachments/5/{UPLOADED}/captain-nova.png?ex=ffffffff\"")));
+    assert!(page.contains(&format!("src=\"https://cdn.discordapp.com/attachments/5/{UPLOADED}/captain-nova.png?ex=ffffffff&amp;fresh\"")));
     assert!(page.contains("Uploaded picture in use."));
+}
+
+#[tokio::test]
+async fn a_player_uploads_their_own_picture_and_expressions_and_staff_see_each_in_the_mod_log() {
+    let mut admin = admin();
+    admin.services.settings().set_mod_log(MOD_LOG).unwrap();
+    admin.post(&format!("/players/{NOVA_PLAYER}/characters"), "slot=1&name=Captain+Nova").await;
+    admin.post(&format!("/players/{NOXA_PLAYER}/characters"), "slot=1&name=Noxa").await;
+    admin.line().await;
+    admin.line().await;
+    let nova = admin.services.characters().of_player(NOVA_PLAYER).unwrap().remove(0);
+    let noxa = admin.services.characters().of_player(NOXA_PLAYER).unwrap().remove(0);
+    let home = format!("/p/{}", admin.services.links().issue(NOVA_PLAYER, Access::Player).unwrap());
+
+    // Not theirs, not an image, a bad name: refused before anything goes to Discord.
+    let (kind, body) = multipart(PNG);
+    admin.call("POST", &format!("{home}/characters/{}/picture", noxa.id), Some((&kind, body))).await;
+    assert!(admin.get(&home).await.contains("Pick one of your own characters."));
+    let (kind, body) = multipart(b"GIF? no");
+    admin.call("POST", &format!("{home}/characters/{}/picture", nova.id), Some((&kind, body))).await;
+    assert!(admin.get(&home).await.contains("not a PNG, JPEG, GIF or WebP"));
+    let (kind, body) = with_texts(&[("name", "two words")], PNG);
+    admin.call("POST", &format!("{home}/characters/{}/expressions/upload", nova.id), Some((&kind, body))).await;
+    assert!(admin.get(&home).await.contains("Name: 1 to 20 letters"));
+
+    let (kind, body) = multipart(PNG);
+    admin.call("POST", &format!("{home}/characters/{}/picture", nova.id), Some((&kind, body))).await;
+    assert_eq!(admin.line().await, format!("🖼️ Player image, a picture for **Captain Nova**, submitted by <@{NOVA_PLAYER}>: {JUMP} · /mypage"));
+    assert_eq!(admin.services.sheets().get(nova.id).unwrap().unwrap().picture_message, Some(UPLOADED));
+
+    let (kind, body) = with_texts(&[("name", "Happy"), ("color", "#C0392B")], PNG);
+    admin.call("POST", &format!("{home}/characters/{}/expressions/upload", nova.id), Some((&kind, body))).await;
+    assert_eq!(admin.line().await, format!("🖼️ Player image, expression **happy** for **Captain Nova**, submitted by <@{NOVA_PLAYER}>: {JUMP} · /mypage"));
+    let happy = admin.services.sheets().expressions(nova.id).unwrap().remove(0);
+    assert_eq!((happy.name.as_str(), happy.color), ("happy", Some(0xC0_39_2B)));
+    assert!(happy.url.contains("captain-nova-happy.png"));
+    assert!(admin.get(&home).await.contains(&format!("{}&amp;fresh", super::html::esc(&happy.url))));
+
+    // Staff upload any sheet's expression, logged as theirs.
+    let (kind, body) = with_texts(&[("name", "angry")], PNG);
+    admin.call("POST", &admin.at(&format!("/characters/{}/expressions/upload", noxa.id)), Some((&kind, body))).await;
+    assert_eq!(admin.line().await, format!("🖼️ <@{STAFF}> uploaded expression **angry** for **Noxa** (<@{NOXA_PLAYER}>): {JUMP} · admin pages"));
 }
 
 #[tokio::test]

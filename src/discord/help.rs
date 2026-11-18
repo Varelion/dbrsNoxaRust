@@ -150,7 +150,7 @@ const GUIDES: &[Guide] = &[
         steps: &[
             "1. On `/mypage`, under a character's **Posting**, give them a prefix, like `nova`.",
             "2. Post `nova: Hello there`: the bot posts it again under their name and picture, and removes yours.",
-            "3. **Expressions** are other pictures: add `happy` with an image link, then post `nova:happy Hi!`. An unknown one posts with the main picture.",
+            "3. **Expressions** are other pictures: add `happy` with an image link or an upload, then post `nova:happy Hi!`. An unknown one posts with the main picture.",
             "React ❌ to your post to delete it, every part; react ✏️ and press **Edit** to change it. Only you can.",
             "A reply keeps who it answers; long posts come in parts; attachments come along.",
             "Staff post as the cast the same way: an NPC's prefix, when they have no character of their own with it.",
@@ -177,6 +177,7 @@ const GUIDES: &[Guide] = &[
             "`/mypage` sends a link by DM; with DMs closed it shows only to you, here.",
             "The link works until 30 minutes pass without use, 4 hours at most. A new one replaces the old. Never share it.",
             "**My characters**: each as a card. **Play as <name>** under a card makes them the one you play.",
+            "Under a card: **Picture** uploads its picture; **Expressions** takes a link or an upload. Staff see every upload in the mod log.",
             "**Spirit Points**: your balance and its last changes. Staff give them; posting earns none.",
             "**Shop**: spend Spirit Points; what you buy shows under **Inventory** (`/help shop`).",
             "**Players**: everyone with a character, and their cards.",

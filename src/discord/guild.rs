@@ -5,7 +5,7 @@
 //!   Ask::People   ─► the member list (one call, kept 10 minutes), else one call per unknown id
 //!   Ask::Channels ─► the server's channels, kept 1 minute
 //!   Ask::Upload   ─► a message in the pictures channel, the image attached
-//!   Ask::Fresh    ─► each picture's link; one near its expiry is fetched again from its message
+//!   Ask::Fresh    ─► each Discord link near its expiry signed again (POST attachments/refresh-urls)
 //! ```
 //!
 //! Everything but Audit runs in its own task, so a slow upload never holds up a mod log line.
@@ -21,13 +21,15 @@ use twilight_model::channel::ChannelType;
 use twilight_model::channel::message::AllowedMentions;
 use twilight_model::guild::Member;
 use twilight_model::http::attachment::Attachment;
+use serde::{Deserialize, Serialize};
+use twilight_http::request::{Method, RequestBuilder};
 use twilight_model::id::Id;
 
 use super::app::App;
 use super::modlog;
 use super::profile::icon_url;
 use crate::domain::pictures::expires_at;
-use crate::services::guild::{Ask, Channel, ChannelKind, Person, Stored, Upload, UploadRefused, Uploaded};
+use crate::services::guild::{Ask, Channel, ChannelKind, Person, Upload, UploadRefused, Uploaded, fresh_or};
 use crate::store::characters::CharacterRow;
 
 const NAMES_KEPT: Duration = Duration::from_secs(10 * 60);
@@ -39,6 +41,9 @@ const LOOKUPS_MAX: usize = 20;
 // A link this close to expiring is fetched again: a page may stay open a while.
 const FRESH_MARGIN_S: u64 = 60 * 60;
 const ATTACHMENT_ID: u64 = 1;
+const REFRESH_PATH: &str = "attachments/refresh-urls";
+// Discord signs at most this many links per call.
+const REFRESH_BATCH: usize = 50;
 
 #[derive(Default)]
 struct Names {
@@ -53,7 +58,8 @@ struct Names {
 pub(crate) struct Caches {
     names: Mutex<Names>,
     channels: Mutex<Option<(Instant, Vec<Channel>)>>,
-    links: Mutex<HashMap<u64, String>>,
+    /// Discord links signed again: the stored link, and its fresh one.
+    links: Mutex<HashMap<String, String>>,
     cooldowns: Mutex<HashMap<u64, Instant>>,
 }
 
@@ -88,8 +94,8 @@ pub(crate) async fn answer(app: Arc<App>, mut asks: UnboundedReceiver<Ask>) {
             Ask::Upload { upload, reply } => {
                 tokio::spawn(async move { reply.send(self::upload(&app, upload).await).ok() });
             }
-            Ask::Fresh { pictures, reply } => {
-                tokio::spawn(async move { reply.send(fresh(&app, pictures).await).ok() });
+            Ask::Fresh { links, reply } => {
+                tokio::spawn(async move { reply.send(fresh(&app, links).await).ok() });
             }
             Ask::Did { user, did } => {
                 tokio::spawn(async move { super::tutorial::observe(&app, user, did).await });
@@ -234,47 +240,77 @@ async fn upload(app: &App, upload: Upload) -> Result<Uploaded, UploadRefused> {
         return Err(UploadRefused::Refused);
     };
     info!(message = %message.id, size, "picture uploaded");
-    locked(&app.caches.links).insert(message.id.get(), file.url.clone());
-    Ok(Uploaded { message_id: message.id.get(), url: file.url.clone() })
+    Ok(Uploaded { channel_id: channel.get(), message_id: message.id.get(), url: file.url.clone() })
 }
 
 fn now_s() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs())
 }
 
-// The picture's link from its message, as Discord signs it now.
-async fn refetched(app: &App, message_id: u64) -> Option<String> {
-    let (channel, message) = (app.pictures?, Id::new_checked(message_id)?);
-    let found = match app.http.message(channel, message).await {
-        Ok(response) => response.model().await.ok(),
-        Err(source) => {
-            warn!(?source, message_id, "an uploaded picture's message is gone or unreadable");
-            None
-        }
-    };
-    let url = found?.attachments.first()?.url.clone();
-    locked(&app.caches.links).insert(message_id, url.clone());
-    Some(url)
+#[derive(Serialize)]
+struct RefreshAsk<'a> {
+    attachment_urls: &'a [String],
 }
 
-async fn fresh(app: &App, pictures: Vec<Stored>) -> HashMap<u64, String> {
-    let mut links = HashMap::new();
-    for picture in pictures {
-        let known = locked(&app.caches.links).get(&picture.message_id).cloned().unwrap_or(picture.url);
-        let lasting = expires_at(&known).is_none_or(|at| at > now_s() + FRESH_MARGIN_S);
-        let link = if lasting { Some(known) } else { refetched(app, picture.message_id).await };
-        if let Some(link) = link {
-            links.insert(picture.message_id, link);
+#[derive(Deserialize)]
+struct Refreshed {
+    refreshed_urls: Vec<Pair>,
+}
+
+#[derive(Deserialize)]
+struct Pair {
+    original: String,
+    refreshed: String,
+}
+
+// Discord's links signed again, as it answers: the link asked for, and its fresh one.
+async fn refreshed(app: &App, stale: &[String]) -> Result<Vec<Pair>> {
+    let body = serde_json::to_vec(&RefreshAsk { attachment_urls: stale })?;
+    let request = RequestBuilder::raw(Method::Post, REFRESH_PATH.to_owned()).body(body).build()?;
+    Ok(app.http.request::<Refreshed>(request).await?.model().await?.refreshed_urls)
+}
+
+// Each link, fresh: a lasting one as it is, a stale one signed again. One Discord cannot sign is left out.
+async fn fresh(app: &App, links: Vec<String>) -> HashMap<String, String> {
+    let mut fresh = HashMap::new();
+    let mut stale = Vec::new();
+    for link in links {
+        if expires_at(&link).is_none() {
+            continue;
+        }
+        let known = locked(&app.caches.links).get(&link).cloned().unwrap_or_else(|| link.clone());
+        if expires_at(&known).is_some_and(|at| at > now_s() + FRESH_MARGIN_S) {
+            fresh.insert(link, known);
+            continue;
+        }
+        if !stale.contains(&link) {
+            stale.push(link);
         }
     }
-    links
+    for batch in stale.chunks(REFRESH_BATCH) {
+        let pairs = match refreshed(app, batch).await {
+            Ok(pairs) => pairs,
+            Err(source) => {
+                warn!(?source, count = batch.len(), "Discord did not sign links again");
+                continue;
+            }
+        };
+        let mut known = locked(&app.caches.links);
+        for pair in pairs {
+            known.insert(pair.original.clone(), pair.refreshed.clone());
+            fresh.insert(pair.original, pair.refreshed);
+        }
+    }
+    fresh
 }
 
-/// A character's picture for a card: a fresh link for an upload, else its own link; None: their icon.
+/// A link that works now: a stale Discord link signed again, anything else as it is.
+pub(crate) async fn fresh_link(app: &App, url: &str) -> String {
+    fresh_or(url, &fresh(app, vec![url.to_owned()]).await)
+}
+
+/// A character's picture, its link working now; None: their icon.
 pub(crate) async fn picture_of(app: &App, row: &CharacterRow) -> Option<String> {
-    let Some(stored) = Stored::of(row) else {
-        return row.picture_url.clone();
-    };
-    let message_id = stored.message_id;
-    fresh(app, vec![stored]).await.remove(&message_id).or_else(|| row.picture_url.clone())
+    let url = row.picture_url.as_deref()?;
+    Some(fresh_link(app, url).await)
 }

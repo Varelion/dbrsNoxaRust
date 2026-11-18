@@ -11,30 +11,27 @@
 
 use std::collections::HashMap;
 
-use axum::extract::{Form, Multipart, Path, State};
+use axum::extract::{Form, Path, State};
 use axum::response::{Html, IntoResponse};
 use serde::Deserialize;
-use tracing::error;
 
 use super::html::{self, Section, esc, options, or_dash, person, plain, portrait};
 use super::mcguffins::{BACK_CHARACTER, Back, give_to};
+use super::uploads::{expression_form, picture_form};
 use super::{NO_MOD_LOG, Page, Session, Web, done, expired, owner, refused};
 use crate::domain::dragon_balls::ball_label;
 use crate::domain::feats::{FeatCounts, FeatKind, FeatState, NOTE_MAX, REASON_MAX};
 use crate::domain::links::parse_link;
 use crate::domain::npcs::CAST;
-use crate::domain::pictures::{UPLOAD_MAX, kind_of};
 use crate::services::characters::NAME_MAX;
 use crate::services::feats::{Added, FeatView, Moved, NewFeat, PostRef};
-use crate::services::guild::{Stored, Upload, UploadRefused, picture_link};
+use crate::services::guild::{fresh_or, picture_link};
 use crate::services::links::Notice;
 use crate::services::sheets::{ExpressionSaved, PictureChoice, Posting, SheetForm, SheetSaved, Target, changed};
 use crate::store::expressions::ExpressionRow;
 use crate::store::characters::CharacterRow;
 
 const GONE: &str = "That character is gone.";
-const PICTURE_FIELD: &str = "picture";
-const UPLOAD_MIB: usize = UPLOAD_MAX / (1024 * 1024);
 const ICON_ON: &str = "on";
 
 /// A sheet as the form holds it: from the database, or as typed when a save was refused.
@@ -158,7 +155,7 @@ pub(super) async fn npcs(State(web): State<Web>, Path(token): Path<String>) -> P
         return Ok(expired());
     };
     let cast = web.services.sheets().npcs()?;
-    let fresh = web.guild.fresh(cast.iter().filter_map(Stored::of).collect()).await;
+    let fresh = web.guild.fresh(cast.iter().filter_map(|c| c.picture_url.clone()).collect()).await;
     let t = esc(&session.token);
     let rows: String = cast
         .iter()
@@ -242,7 +239,9 @@ async fn sheet_page(web: &Web, session: &Session, id: i64, typed: Option<SheetIn
     ids.sort_unstable();
     ids.dedup();
     let names = web.guild.names(ids).await;
-    let fresh = web.guild.fresh(Stored::of(row).into_iter().collect()).await;
+    let expressions = web.services.sheets().expressions(id)?;
+    let links = row.picture_url.iter().cloned().chain(expressions.iter().map(|e| e.url.clone())).collect();
+    let fresh = web.guild.fresh(links).await;
     let link = picture_link(row, &fresh);
 
     let t = esc(&session.token);
@@ -276,15 +275,10 @@ async fn sheet_page(web: &Web, session: &Session, id: i64, typed: Option<SheetIn
         notes = esc(&values.notes),
         posting = if values.posting == ICON_ON { " checked" } else { "" },
     );
-    let upload = format!(
-        "<form method=\"post\" action=\"/a/{t}/characters/{id}/picture\" enctype=\"multipart/form-data\" class=\"row\">\
-         <label>New picture: PNG, JPEG, GIF or WebP, up to {UPLOAD_MIB} MiB<input type=\"file\" name=\"{PICTURE_FIELD}\" accept=\"image/png,image/jpeg,image/gif,image/webp\" required></label>\
-         <button type=\"submit\">Upload</button></form>\
-         <p class=\"dim small\">Kept as a message in the pictures channel, so Discord hosts it.</p>"
-    );
+    let upload = picture_form(&format!("/a/{t}/characters/{id}/picture"));
 
     let carries = carries(&t, &profile, &mcguffins);
-    let expressions = expressions_card(&format!("/a/{t}/characters/{id}/expressions"), row, &web.services.sheets().expressions(id)?);
+    let expressions = expressions_card(&format!("/a/{t}/characters/{id}/expressions"), row, &expressions, &fresh);
     let feats = feats_card(&t, web.guild.server(), id, &active, &archived, &names);
     let subtitle = [row.race.as_deref().map(esc), row.tier.map(|tier| format!("Tier {tier}")), row.title.as_deref().map(|title| format!("<i>{}</i>", esc(title)))]
         .into_iter()
@@ -352,7 +346,8 @@ fn carries(t: &str, profile: &crate::services::characters::Profile, mcguffins: &
 
 /// A character's expressions: each with its picture and colour, a remove button, and a form to add one.
 /// `action` is where the forms post: the admin sheet's, or the player's own page's.
-pub(super) fn expressions_card(action: &str, row: &CharacterRow, list: &[ExpressionRow]) -> String {
+pub(super) fn expressions_card(action: &str, row: &CharacterRow, list: &[ExpressionRow], fresh: &HashMap<String, String>) -> String {
+    let upload = expression_form(&format!("{action}/upload"));
     let action = esc(action);
     let prefix = row.prefix.as_deref().unwrap_or("prefix");
     let rows: String = list
@@ -362,7 +357,7 @@ pub(super) fn expressions_card(action: &str, row: &CharacterRow, list: &[Express
             format!(
                 "<li class=\"inline\"><img class=\"pic\" src=\"{}\" alt=\"\"> <code>{}:{}</code>{color}<form method=\"post\" action=\"{action}/remove\">\
                  <input type=\"hidden\" name=\"name\" value=\"{}\"><button class=\"quiet\" type=\"submit\">Remove</button></form></li>",
-                esc(&e.url),
+                esc(&fresh_or(&e.url, fresh)),
                 esc(prefix),
                 esc(&e.name),
                 esc(&e.name)
@@ -375,7 +370,8 @@ pub(super) fn expressions_card(action: &str, row: &CharacterRow, list: &[Express
          <form method=\"post\" action=\"{action}\" class=\"grid\"><label>Name<input name=\"name\" maxlength=\"20\" placeholder=\"happy\" required></label>\
          <label>Image link (https)<input name=\"url\" maxlength=\"400\" placeholder=\"https://…\" required></label>\
          <label>Colour bar, optional<input name=\"color\" maxlength=\"7\" placeholder=\"#C0392B\"></label>\
-         <div><button type=\"submit\">Save expression</button></div></form></section>",
+         <div><button type=\"submit\">Save expression</button></div></form>\
+         <p class=\"dim small\">Or upload the image:</p>{upload}</section>",
         p = esc(prefix)
     )
 }
@@ -537,82 +533,6 @@ pub(super) async fn save(State(web): State<Web>, Path((token, id)): Path<(String
     Ok(web.back(&session, &format!("/characters/{id}"), done(format!("Saved: {}.", fields.join(", ")))))
 }
 
-// A file's name from the character's: "captain-nova".
-fn stem_of(name: &str) -> String {
-    let stem: String = name.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' }).collect();
-    let stem = stem.split('-').filter(|part| !part.is_empty()).collect::<Vec<_>>().join("-");
-    if stem.is_empty() { PICTURE_FIELD.to_owned() } else { stem }
-}
-
-// The picture field's bytes; Err: the upload did not arrive whole.
-async fn picture_bytes(mut multipart: Multipart) -> Result<Option<Vec<u8>>, axum::extract::multipart::MultipartError> {
-    while let Some(field) = multipart.next_field().await? {
-        if field.name() == Some(PICTURE_FIELD) {
-            return Ok(Some(field.bytes().await?.to_vec()));
-        }
-    }
-    Ok(None)
-}
-
-pub(super) async fn upload(State(web): State<Web>, Path((token, id)): Path<(String, i64)>, multipart: Multipart) -> Page {
-    let Some(session) = web.staff(&token) else {
-        return Ok(expired());
-    };
-    let path = format!("/characters/{id}");
-    if !web.logged()? {
-        return Ok(web.back(&session, &path, refused(NO_MOD_LOG)));
-    }
-    let Some(row) = web.services.sheets().get(id)? else {
-        return Ok(web.back(&session, "/characters", refused(GONE)));
-    };
-    let bytes = match picture_bytes(multipart).await {
-        Ok(Some(bytes)) if !bytes.is_empty() => bytes,
-        Ok(_) => return Ok(web.back(&session, &path, refused("Pick an image file first."))),
-        Err(source) => {
-            tracing::warn!(?source, "an upload did not arrive whole");
-            return Ok(web.back(&session, &path, refused(format!("That upload did not arrive whole. Pictures go up to {UPLOAD_MIB} MiB."))));
-        }
-    };
-    if bytes.len() > UPLOAD_MAX {
-        return Ok(web.back(&session, &path, refused(format!("That picture is over {UPLOAD_MIB} MiB."))));
-    }
-    let Some(kind) = kind_of(&bytes) else {
-        return Ok(web.back(&session, &path, refused("That is not a PNG, JPEG, GIF or WebP image.")));
-    };
-
-    // A big file takes Discord a while, longer than the relay waits for a page: it goes up in the
-    // background, and says how it went on the next page this link opens.
-    let staff = session.staff;
-    let caption = format!("🖼️ **{}**'s picture ({}) · uploaded by <@{staff}>", plain(&row.name), owner(row.player_id));
-    let upload = Upload { bytes, kind, caption, stem: stem_of(&row.name) };
-    let (background, token) = (web.clone(), session.token.clone());
-    tokio::spawn(async move {
-        let notice = finish_upload(&background, id, staff, upload).await;
-        background.services.links().tell(&token, notice);
-    });
-    Ok(web.back(&session, &path, done("Uploading the picture… reload in a few seconds to see it.")))
-}
-
-async fn finish_upload(web: &Web, id: i64, staff: u64, upload: Upload) -> Notice {
-    let uploaded = match web.guild.upload(upload).await {
-        Ok(uploaded) => uploaded,
-        Err(UploadRefused::NoChannel) => return refused("Uploads are off: PICTURES_CHANNEL is not set in the bot's .env."),
-        Err(UploadRefused::Refused) => return refused("Discord refused the picture. Can the bot post and attach files in the pictures channel?"),
-        Err(UploadRefused::Gone) => return refused("The bot is not connected to Discord right now. Try again shortly."),
-    };
-    match web.services.sheets().set_picture(id, &uploaded.url, uploaded.message_id) {
-        Ok(Some(after)) => {
-            web.audit(&format!("🖼️ <@{staff}> uploaded a picture for **{}** ({})", plain(&after.name), owner(after.player_id)));
-            done("The new picture is up.")
-        }
-        Ok(None) => refused("That character is gone; the picture was not kept."),
-        Err(source) => {
-            error!(error = ?source, "saving an uploaded picture failed");
-            refused("Saving the picture failed. It is in the bot's log.")
-        }
-    }
-}
-
 #[derive(Deserialize, Default)]
 #[serde(default)]
 pub(super) struct GiveInput {
@@ -727,16 +647,4 @@ pub(super) async fn restore(State(web): State<Web>, Path((token, feat)): Path<(S
         Moved::NotFound => refused("No such feat."),
     };
     Ok(web.back(&session, &path, notice))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn file_names_come_from_the_character_name() {
-        assert_eq!(stem_of("Captain Nova"), "captain-nova");
-        assert_eq!(stem_of("  Gogeta (SSJ4)!! "), "gogeta-ssj4");
-        assert_eq!(stem_of("孫悟空"), "picture");
-    }
 }
