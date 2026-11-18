@@ -1,11 +1,7 @@
 //! Character slots, Bot1's way: browse them, and pick who you play.
 //!
 //! ```text
-//!   /panel [player]      Character Panel: a short block per slot, number buttons pick who you play
-//!
-//!     **1 · Captain Nova** · playing
-//!     Saiyan · Tier 3 · `nova:` · 12 posts
-//!     Earth 3★ · Dragon Radar
+//!   /panel [player]      🎭 Character Panel: one field per slot, number buttons pick who you play
 //!   /set character:<…>   play one of yours, by its menu
 //!   .set1 … .set10       the quick way; the answer and the command go away after 7 seconds
 //!
@@ -22,7 +18,7 @@ use twilight_model::channel::message::Embed;
 use twilight_model::channel::message::component::{ButtonStyle, Component};
 use twilight_model::id::Id;
 use twilight_model::id::marker::UserMarker;
-use twilight_util::builder::embed::{EmbedBuilder, EmbedFooterBuilder};
+use twilight_util::builder::embed::{EmbedBuilder, EmbedFieldBuilder, EmbedFooterBuilder};
 
 use super::characters::{menu, pick};
 use super::ctx::{Ctx, Options};
@@ -36,10 +32,12 @@ use crate::store::characters::CharacterRow;
 const PREFIX: &str = "noxadbrs|panel|";
 const BLURPLE: u32 = 0x58_65_F2;
 const GREEN: u32 = 0x57_F2_87;
+const NUMBERS: [&str; 10] = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"];
 const PER_ROW: usize = 5;
 const RULE: &str = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
-/// What a slot's carried line shows at most, so ten slots fit one embed.
-const CARRIED_MAX: usize = 150;
+const NOTHING: &str = "—";
+/// Ends a slot's field with an empty line, so slots stand apart. Discord trims plain blank lines.
+const GAP: &str = "\n\u{200B}";
 
 /// The box every switch answers with, as Bot1 draws it.
 pub(crate) fn now_playing(name: &str, slot: i64) -> String {
@@ -57,41 +55,36 @@ pub(crate) fn owns(custom_id: &str) -> bool {
     custom_id.starts_with(PREFIX)
 }
 
-// "📡 Dragon Radar" ─► "Dragon Radar": the panel keeps to words.
-fn bare(label: &str) -> &str {
-    label.trim_start_matches(|c: char| !c.is_alphanumeric())
+fn number(slot: i64) -> &'static str {
+    usize::try_from(slot - 1).ok().and_then(|i| NUMBERS.get(i)).copied().unwrap_or("#️⃣")
 }
 
-// One slot's block: name, who they are and how much they post, what they carry.
-fn slot_block(profile: &Profile, active: bool) -> String {
+// One slot's lines: who they are, what they carry, how much they post, and whether they are played.
+fn slot_lines(profile: &Profile, active: bool) -> String {
     let c = &profile.character;
-    let playing = if active { " · playing" } else { "" };
-    let mut lines = vec![format!("**{} · {}**{playing}", c.slot, plain(&c.name))];
-
-    let mut about = vec![plain(c.race.as_deref().unwrap_or("Race not set"))];
-    about.push(c.tier.map_or_else(|| "tier not set".to_owned(), |t| format!("Tier {t}")));
+    let tier = c.tier.map_or_else(|| "tier not set".to_owned(), |t| format!("Tier {t}"));
+    let mut lines = vec![format!("{} · {tier}", plain(c.race.as_deref().unwrap_or("Race not set")))];
     if let Some(prefix) = c.prefix.as_deref().filter(|_| c.posting) {
-        about.push(format!("`{prefix}:`"));
+        lines.push(format!("💬 `{prefix}:` · {} posts", c.posts));
+    } else {
+        lines.push(format!("{} posts", c.posts));
     }
-    about.push(format!("{} posts", c.posts));
-    lines.push(about.join(" · "));
-
     let carried: Vec<String> = profile
         .balls
         .iter()
         .map(|(set, star)| ball_label(*set, *star))
-        .chain(profile.items.iter().map(|(item, n)| if *n > 1 { format!("{} ×{n}", bare(item.label())) } else { bare(item.label()).to_owned() }))
-        .chain(profile.mcguffins.iter().map(|(_, name)| plain(name)))
+        .chain(profile.items.iter().map(|(item, n)| if *n > 1 { format!("{} ×{n}", item.label()) } else { item.label().to_owned() }))
+        .chain(profile.mcguffins.iter().map(|(emoji, name)| format!("{emoji} {}", plain(name))))
         .collect();
-    let carried = carried.join(" · ");
     if !carried.is_empty() {
-        let mut short: String = carried.chars().take(CARRIED_MAX).collect();
-        if short.len() < carried.len() {
-            short.push('…');
-        }
-        lines.push(short);
+        lines.push(carried.join(" · "));
     }
-    lines.join("\n")
+    if active {
+        lines.push("✅ **ACTIVE**".to_owned());
+    }
+    let text = lines.join("\n");
+    let text = if text.is_empty() { NOTHING.to_owned() } else { text };
+    format!("{text}{GAP}")
 }
 
 /// Whether a slot is the one being played.
@@ -105,7 +98,7 @@ enum Slot {
 // character still has something to press (the tutorial waits on it).
 fn pick_button(player: Id<UserMarker>, id: i64, slot: i64, state: Slot) -> Component {
     let style = if state == Slot::Playing { ButtonStyle::Success } else { ButtonStyle::Primary };
-    button(format!("{PREFIX}{player}|{id}"), &slot.to_string(), style)
+    button(format!("{PREFIX}{player}|{id}"), &format!("{} {slot}", number(slot)), style)
 }
 
 fn render(ctx: &Ctx<'_>, player: Id<UserMarker>, view: View, color: u32) -> Result<Option<(Embed, Vec<Component>)>> {
@@ -117,24 +110,19 @@ fn render(ctx: &Ctx<'_>, player: Id<UserMarker>, view: View, color: u32) -> Resu
     let active = characters.active(player.get())?.map(|c| c.id);
     let sp = ctx.app.services.spirit().balance(player.get())?;
 
-    let intro = match view {
-        View::Own => "Press a number to play that character.".to_owned(),
-        View::Other => format!("<@{player}>'s characters."),
+    let description = match view {
+        View::Own => "Select a character to set as active by clicking the corresponding number button below.".to_owned(),
+        View::Other => format!("Only <@{player}> can pick who they play."),
     };
-    let mut blocks = vec![intro];
+    let mut embed = EmbedBuilder::new().title("🎭 Character Panel").color(color).description(description);
     for character in &theirs {
         let Some(profile) = characters.profile(character.id)? else {
             continue;
         };
-        blocks.push(slot_block(&profile, active == Some(character.id)));
+        let name = format!("{} Slot {}: {}", number(character.slot), character.slot, character.name);
+        embed = embed.field(EmbedFieldBuilder::new(name, slot_lines(&profile, active == Some(character.id))));
     }
-    let embed = EmbedBuilder::new()
-        .title("Character Panel")
-        .color(color)
-        .description(blocks.join("\n\n"))
-        .footer(EmbedFooterBuilder::new(format!("{sp} Spirit Points · .set<slot> also switches")))
-        .validate()?
-        .build();
+    let embed = embed.footer(EmbedFooterBuilder::new(format!("🔮 {sp} Spirit Points · .set<slot> switches too"))).validate()?.build();
     if view == View::Other {
         return Ok(Some((embed, Vec::new())));
     }
