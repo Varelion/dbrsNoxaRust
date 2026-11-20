@@ -3,7 +3,7 @@
 //! ```text
 //!   ┌ [picture] Captain Nova · Earthling · Tier 9 · Nicolas ───────────────┐
 //!   │ Sheet       name prefix race tier title picture bio notes  [Save]    │
-//!   │ Picture     [file]  [Upload] ─► the pictures channel, in the background │
+//!   │ Picture     [file]  [Upload] ─► shrunk, sent to the pictures channel     │
 //!   │ Carries     Dragon Balls, items, McGuffins   [give ▾] [take back]    │
 //!   │ Feats       active [archive], archived [restore], [log a feat]       │
 //!   └──────────────────────────────────────────────────────────────────────┘
@@ -17,7 +17,7 @@ use serde::Deserialize;
 
 use super::html::{self, Section, esc, options, or_dash, person, plain, portrait};
 use super::mcguffins::{BACK_CHARACTER, Back, give_to};
-use super::uploads::{expression_form, picture_form};
+use super::uploads::{UPLOAD_SCRIPT, expression_form, picture_form};
 use super::{NO_MOD_LOG, Page, Session, Web, done, expired, owner, refused};
 use crate::domain::dragon_balls::ball_label;
 use crate::domain::feats::{FeatCounts, FeatKind, FeatState, NOTE_MAX, REASON_MAX};
@@ -275,10 +275,11 @@ async fn sheet_page(web: &Web, session: &Session, id: i64, typed: Option<SheetIn
         notes = esc(&values.notes),
         posting = if values.posting == ICON_ON { " checked" } else { "" },
     );
-    let upload = picture_form(&format!("/a/{t}/characters/{id}/picture"));
+    let ticket = format!("/a/{t}/characters/{id}/upload-ticket");
+    let upload = picture_form(&ticket);
 
     let carries = carries(&t, &profile, &mcguffins);
-    let expressions = expressions_card(&format!("/a/{t}/characters/{id}/expressions"), row, &expressions, &fresh);
+    let expressions = expressions_card(&format!("/a/{t}/characters/{id}/expressions"), &ticket, row, &expressions, &fresh);
     let feats = feats_card(&t, web.guild.server(), id, &active, &archived, &names);
     let subtitle = [row.race.as_deref().map(esc), row.tier.map(|tier| format!("Tier {tier}")), row.title.as_deref().map(|title| format!("<i>{}</i>", esc(title)))]
         .into_iter()
@@ -289,7 +290,7 @@ async fn sheet_page(web: &Web, session: &Session, id: i64, typed: Option<SheetIn
     let body = format!(
         "<header class=\"head\">{portrait}<div><p>{back}</p><h1>{name}</h1><p>{subtitle}</p><p class=\"dim\">{whose} · slot {slot} · {posts} posts</p></div></header>\
          <div class=\"cols\"><section class=\"card\"><h2>Sheet</h2>{sheet}</section>\
-         <div style=\"display:grid;gap:18px\"><section class=\"card\"><h2>Picture</h2>{upload}</section>{expressions}{carries}</div></div>{feats}",
+         <div style=\"display:grid;gap:18px\"><section class=\"card\"><h2>Picture</h2>{upload}</section>{expressions}{carries}</div></div>{feats}{UPLOAD_SCRIPT}",
         portrait = portrait(link.as_deref(), &row.name),
         name = esc(&row.name),
         whose = whose(row, &names),
@@ -345,9 +346,10 @@ fn carries(t: &str, profile: &crate::services::characters::Profile, mcguffins: &
 }
 
 /// A character's expressions: each with its picture and colour, a remove button, and a form to add one.
-/// `action` is where the forms post: the admin sheet's, or the player's own page's.
-pub(super) fn expressions_card(action: &str, row: &CharacterRow, list: &[ExpressionRow], fresh: &HashMap<String, String>) -> String {
-    let upload = expression_form(&format!("{action}/upload"));
+/// `action` is where the forms post: the admin sheet's, or the player's own page's; `ticket` is where an
+/// upload asks for its ticket.
+pub(super) fn expressions_card(action: &str, ticket: &str, row: &CharacterRow, list: &[ExpressionRow], fresh: &HashMap<String, String>) -> String {
+    let upload = expression_form(ticket);
     let action = esc(action);
     let prefix = row.prefix.as_deref().unwrap_or("prefix");
     let rows: String = list

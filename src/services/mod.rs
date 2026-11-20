@@ -32,6 +32,7 @@ pub(crate) mod settings;
 pub(crate) mod sheets;
 pub(crate) mod shop;
 pub(crate) mod spirit;
+pub(crate) mod tickets;
 pub(crate) mod tutorials;
 pub(crate) mod worlds;
 

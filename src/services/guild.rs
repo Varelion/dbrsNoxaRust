@@ -2,7 +2,7 @@
 //! layer. The web never calls Discord itself.
 //!
 //! ```text
-//!   web ─► Guild::people / channels / upload / fresh / audit ─► Ask ─► discord::guild::answer ─► Discord
+//!   web ─► Guild::people / channels / fresh / audit ─► Ask ─► discord::guild::answer ─► Discord
 //!                    ◄──────────────────── oneshot reply ◄────────────────┘
 //! ```
 //!
@@ -14,7 +14,6 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::sync::oneshot;
 use tracing::warn;
 
-use crate::domain::pictures::ImageKind;
 use crate::domain::tutorial::Did;
 use crate::store::characters::CharacterRow;
 
@@ -41,16 +40,7 @@ pub(crate) struct Channel {
     pub(crate) position: i32,
 }
 
-/// An image for the pictures channel.
-pub(crate) struct Upload {
-    pub(crate) bytes: Vec<u8>,
-    pub(crate) kind: ImageKind,
-    /// The line posted with it: whose picture, who uploaded it.
-    pub(crate) caption: String,
-    /// The file's name, without its extension: "captain-nova".
-    pub(crate) stem: String,
-}
-
+/// An image in the pictures channel, posted there by the relay Worker's webhook.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Uploaded {
     pub(crate) channel_id: u64,
@@ -65,21 +55,10 @@ impl Uploaded {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum UploadRefused {
-    /// PICTURES_CHANNEL is not set.
-    NoChannel,
-    /// Discord said no: no access to the channel, or the file was refused.
-    Refused,
-    /// No Discord side to ask.
-    Gone,
-}
-
 pub(crate) enum Ask {
     Audit(String),
     People { users: Vec<u64>, reply: oneshot::Sender<HashMap<u64, Person>> },
     Channels { reply: oneshot::Sender<Vec<Channel>> },
-    Upload { upload: Upload, reply: oneshot::Sender<Result<Uploaded, UploadRefused>> },
     Fresh { links: Vec<String>, reply: oneshot::Sender<HashMap<String, String>> },
     /// Something a person did on the web, for their tutorial.
     Did { user: u64, did: Did },
@@ -128,10 +107,6 @@ impl Guild {
         self.ask(|reply| Ask::Channels { reply }).await.unwrap_or_default()
     }
 
-    pub(crate) async fn upload(&self, upload: Upload) -> Result<Uploaded, UploadRefused> {
-        self.ask(|reply| Ask::Upload { upload, reply }).await.unwrap_or(Err(UploadRefused::Gone))
-    }
-
     /// A working link for each Discord link that expires, keyed by the stored one. A link that never
     /// expires, or cannot be signed again, is left out: use it as it is.
     pub(crate) async fn fresh(&self, links: Vec<String>) -> HashMap<String, String> {
@@ -168,8 +143,7 @@ mod tests {
         drop(answers);
         assert!(guild.names(vec![1]).await.is_empty());
         assert!(guild.channels().await.is_empty());
-        let upload = Upload { bytes: Vec::new(), kind: ImageKind::Png, caption: String::new(), stem: String::new() };
-        assert_eq!(guild.upload(upload).await, Err(UploadRefused::Gone));
+        assert!(guild.fresh(vec!["https://cdn.discordapp.com/a.png?ex=1".to_owned()]).await.is_empty());
         guild.audit("kept in the journal".to_owned());
     }
 }

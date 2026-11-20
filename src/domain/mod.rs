@@ -10,4 +10,5 @@ pub(crate) mod proxy;
 pub(crate) mod shop;
 pub(crate) mod links;
 pub(crate) mod spirit;
+pub(crate) mod tickets;
 pub(crate) mod tutorial;

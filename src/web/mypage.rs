@@ -25,7 +25,7 @@ use serde::Deserialize;
 
 use super::html::{self, Mine, esc, portrait};
 use super::sheets::{ExpressionInput, NameInput, expression_refusal, expressions_card};
-use super::uploads::picture_form;
+use super::uploads::{UPLOAD_SCRIPT, picture_form};
 use super::{Page, Web, done, expired, refused};
 use crate::domain::dragon_balls::ball_label;
 use crate::domain::shop::{BUY_MAX, most_owned, price_label};
@@ -98,8 +98,9 @@ async fn own_settings(web: &Web, m: &Me, profile: &Profile) -> anyhow::Result<St
     );
     let list = web.services.sheets().expressions(c.id)?;
     let fresh = web.guild.fresh(list.iter().map(|e| e.url.clone()).collect()).await;
-    let expressions = expressions_card(&m.at(&format!("/characters/{}/expressions", c.id)), c, &list, &fresh);
-    let picture = picture_form(&m.at(&format!("/characters/{}/picture", c.id)));
+    let ticket = m.at(&format!("/characters/{}/upload-ticket", c.id));
+    let expressions = expressions_card(&m.at(&format!("/characters/{}/expressions", c.id)), &ticket, c, &list, &fresh);
+    let picture = picture_form(&ticket);
     Ok(format!("<details><summary><b>Picture</b></summary>{picture}</details>{posting}<details><summary><b>Expressions</b></summary>{expressions}</details>"))
 }
 
@@ -179,7 +180,7 @@ pub(super) async fn home(State(web): State<Web>, Path(token): Path<String>) -> P
         let settings = own_settings(&web, &m, p).await?;
         cards.push_str(&card(Some(&m), p, picture_for(p, &fresh, owner).as_deref(), pick, &settings));
     }
-    let cards = if cards.is_empty() { "<section class=\"card\"><p>You have no characters yet. Staff add approved ones.</p></section>".to_owned() } else { format!("<div class=\"cards\">{cards}</div>") };
+    let cards = if cards.is_empty() { "<section class=\"card\"><p>You have no characters yet. Staff add approved ones.</p></section>".to_owned() } else { format!("<div class=\"cards\">{cards}</div>{UPLOAD_SCRIPT}") };
 
     let name = owner.map_or_else(|| "Your page".to_owned(), |p| p.name.clone());
     let inventory = inventory_card(&web, &m)?;

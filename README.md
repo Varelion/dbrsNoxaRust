@@ -49,10 +49,16 @@ cookies: the token is the login, and a player's link never opens the admin pages
 
 | Player page (`/mypage`) | your characters as cards, who you play (one press), their picture and expressions (link or upload), your Spirit Points and ledger, the shop and your inventory, everyone else's cards |
 
-An uploaded picture or expression, by staff or a player, is posted to `PICTURES_CHANNEL` with the
-image attached, and the mod log links that message. Discord's links expire, so before using one
-(typed or uploaded) the bot has Discord sign it again (`POST attachments/refresh-urls`). The bot needs View Channel, Send Messages,
-Attach Files and Read Message History there.
+An uploaded picture or expression, by staff or a player, never passes through the bot: the page
+shrinks it (1024 px, WebP), the bot signs a 5-minute single-use ticket, and the Worker posts it to
+#pictures through its `PICTURES_WEBHOOK`, then hands the bot the link; the mod log links that message.
+Discord's links expire, so before using one (typed or uploaded) the bot has Discord sign it again
+(`POST attachments/refresh-urls`). Uploads need the relay: a bot without `RELAY_URL` signs no tickets.
+
+```
+page ─► bot  …/characters/<id>/upload-ticket ─► ticket (HMAC-SHA256 with RELAY_SECRET)
+page ─► Worker /upload (image + ticket) ─► #pictures webhook ─► bot /api/uploaded (Worker's frame only)
+```
 
 ## What the network sees
 
@@ -85,7 +91,8 @@ Discord Developer Portal › Bot: enable the **Message Content** intent for post
 logs whether dot commands are on; without it, it never asks Discord for it, so it cannot be locked out), and the **Server Members** intent (`/z_moderator_sp grant` lists a role's holders;
 the admin pages list members' names, else look them up one by one).
 
-The relay: `neoKai/relay-dbrs` (`npx wrangler deploy -c relay-dbrs/wrangler.jsonc`), its `RELAY_SECRET` the same as the bot's.
+The relay: `neoKai/relay-dbrs` (`npx wrangler deploy -c relay-dbrs/wrangler.jsonc`), its `RELAY_SECRET` the same as the bot's,
+and its `PICTURES_WEBHOOK` a webhook in #pictures.
 
 ## On the Pi
 

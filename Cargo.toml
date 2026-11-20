@@ -6,13 +6,15 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.104"
 base64 = "0.22.1"
-axum = { version = "=0.8.9", default-features = false, features = ["tokio", "http1", "form", "query", "multipart"] }
+axum = { version = "=0.8.9", default-features = false, features = ["tokio", "http1", "form", "query"] }
 dotenvy = "0.15.7"
 futures-util = { version = "0.3.34", default-features = false, features = ["sink", "std"] }
 http-body-util = "0.1.5"
 hyper = { version = "1.12.0", default-features = false, features = ["client", "http1"] }
 hyper-util = { version = "0.1.21", default-features = false, features = ["tokio"] }
 rusqlite = { version = "=0.41.1", features = ["bundled"] }
+# Upload tickets: HMAC-SHA256 and random nonces, from the ring that already runs TLS.
+ring = "0.17.14"
 # ring runs TLS; aws-lc-rs only lends its HPKE, which Encrypted Client Hello needs and ring lacks.
 rustls = { version = "=0.23.46", default-features = false, features = ["ring", "aws_lc_rs", "std"] }
 rustls-platform-verifier = "=0.7.1"

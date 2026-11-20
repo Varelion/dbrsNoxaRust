@@ -5,21 +5,24 @@
 //! ```text
 //!   GET  /p/<token>                                a player: their characters, who they play, Spirit Points
 //!   POST /p/<token>/play                           play another of their characters
-//!   POST /p/<token>/characters/<id>/picture|expressions/upload  upload their character's picture, an expression
+//!   POST /p/<token>/characters/<id>/upload-ticket  a ticket to upload their character's picture, an expression
 //!   GET  /p/<token>/shop   POST …/shop/<id>/buy    the shop: buy with Spirit Points
 //!   GET  /p/<token>/players[/<id>]                 everyone's characters, as cards
 //!   GET  /a/<token>                                home: counts, mod log
 //!   GET  /a/<token>/players[/<id>]                 players, one player: Spirit Points, ledger, characters
 //!   POST /a/<token>/players/<id>/sp|characters|inventory  change Spirit Points, add a character, set what they own
 //!   GET  /a/<token>/characters[/<id>]              every character, one sheet: belongings, feats
-//!   POST /a/<token>/characters/<id>[/picture|feats|mcguffins]  save, upload a picture, log a feat, give
-//!   POST /a/<token>/characters/<id>/expressions[/upload|remove]  add an expression by link or upload, remove
+//!   POST /a/<token>/characters/<id>[/feats|mcguffins]  save, log a feat, give
+//!   POST /a/<token>/characters/<id>/upload-ticket  a ticket to upload a picture or an expression
+//!   POST /a/<token>/characters/<id>/expressions[/remove]  add an expression by link, remove
 //!   GET  /a/<token>/npcs     POST /a/<token>/npcs  the cast, add an NPC
 //!   POST /a/<token>/feats/<id>/archive|restore
 //!   GET  /a/<token>/mcguffins[/<id>]               POST …/place|give|take|retire, create, edit
 //!   GET  /a/<token>/worlds   POST /a/<token>/worlds  which categories are worlds
 //!   GET  /a/<token>/shop     POST …/shop[/<id>[/remove]]  the shop's items: add, edit, remove
 //!   GET  /a/<token>/balls[/<set>]                  POST …/need|areas|place|scatter
+//!   GET  /upload.js                                the upload script: shrink, ticket, send (uploads.rs)
+//!   POST /api/uploaded                             the relay Worker's own frame: an upload is in #pictures
 //!   GET  /healthz                                  "ok"
 //! ```
 //!
@@ -43,23 +46,22 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use axum::Router;
-use axum::extract::{DefaultBodyLimit, Path, State};
+use axum::extract::{Path, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use tracing::{error, info};
 
-use crate::domain::pictures::UPLOAD_MAX;
 use crate::services::Services;
 use crate::services::guild::Guild;
 use crate::services::links::{Access, Notice};
+use crate::services::tickets::Tickets;
 
 pub(crate) const NO_MOD_LOG: &str =
     "Set the mod log first, in Discord: /z_moderator_dbrs action:mod_log. Changes wait for it, so none goes unlogged.";
-// Locks the pages down: no scripts at all, pictures only over https, forms only back here, never framed.
-const CSP: &str = "default-src 'none'; style-src 'unsafe-inline'; img-src https:; form-action 'self'; frame-ancestors 'none'; base-uri 'none'";
-// An upload is the picture plus the form's own few lines.
-const UPLOAD_BODY_MAX: usize = UPLOAD_MAX + 64 * 1024;
+// Locks the pages down: scripts only from here (the upload script) and never inline, calls only back
+// here, pictures only over https, forms only back here, never framed.
+const CSP: &str = "default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; img-src https:; form-action 'self'; frame-ancestors 'none'; base-uri 'none'";
 /// Ends every mod log line made here, so staff know where a change came from.
 const VIA: &str = " · admin pages";
 
@@ -67,7 +69,13 @@ const VIA: &str = " · admin pages";
 struct Web {
     services: Arc<Services>,
     guild: Guild,
+    /// Upload tickets, signed with RELAY_SECRET; None without a relay: no Worker to upload through.
+    tickets: Option<Arc<Tickets>>,
 }
+
+/// A request the relay Worker made itself (frame `trusted: true`), never one a browser sent.
+#[derive(Clone, Copy)]
+pub(crate) struct Trusted;
 
 /// A staff member on a live link.
 struct Session {
@@ -154,10 +162,11 @@ fn refused(text: impl Into<String>) -> Notice {
     Notice::Refused(text.into())
 }
 
-pub(crate) fn routes(services: Arc<Services>, guild: Guild) -> Router {
-    let limit = DefaultBodyLimit::max(UPLOAD_BODY_MAX);
+pub(crate) fn routes(services: Arc<Services>, guild: Guild, tickets: Option<Tickets>) -> Router {
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
+        .route(uploads::UPLOAD_SCRIPT_PATH, get(uploads::script))
+        .route("/api/uploaded", post(uploads::uploaded))
         .route("/a/{token}", get(home))
         .route("/a/{token}/players", get(players::list))
         .route("/a/{token}/players/find", get(players::find))
@@ -167,12 +176,11 @@ pub(crate) fn routes(services: Arc<Services>, guild: Guild) -> Router {
         .route("/a/{token}/players/{player}/inventory", post(players::inventory))
         .route("/a/{token}/characters", get(sheets::list))
         .route("/a/{token}/characters/{id}", get(sheets::show).post(sheets::save))
-        .route("/a/{token}/characters/{id}/picture", post(uploads::staff_picture).layer(limit))
+        .route("/a/{token}/characters/{id}/upload-ticket", post(uploads::staff_ticket))
         .route("/a/{token}/characters/{id}/feats", post(sheets::add_feat))
         .route("/a/{token}/characters/{id}/mcguffins", post(sheets::give_mcguffin))
         .route("/a/{token}/characters/{id}/expressions", post(sheets::add_expression))
         .route("/a/{token}/characters/{id}/expressions/remove", post(sheets::remove_expression))
-        .route("/a/{token}/characters/{id}/expressions/upload", post(uploads::staff_expression).layer(limit))
         .route("/a/{token}/npcs", get(sheets::npcs).post(sheets::add_npc))
         .route("/a/{token}/feats/{id}/archive", post(sheets::archive))
         .route("/a/{token}/feats/{id}/restore", post(sheets::restore))
@@ -199,12 +207,11 @@ pub(crate) fn routes(services: Arc<Services>, guild: Guild) -> Router {
         .route("/p/{token}/characters/{id}/posting", post(mypage::posting))
         .route("/p/{token}/characters/{id}/expressions", post(mypage::add_expression))
         .route("/p/{token}/characters/{id}/expressions/remove", post(mypage::remove_expression))
-        .route("/p/{token}/characters/{id}/picture", post(uploads::my_picture).layer(limit))
-        .route("/p/{token}/characters/{id}/expressions/upload", post(uploads::my_expression).layer(limit))
+        .route("/p/{token}/characters/{id}/upload-ticket", post(uploads::my_ticket))
         .route("/p/{token}/players", get(mypage::players))
         .route("/p/{token}/players/{player}", get(mypage::player))
         .layer(axum::middleware::map_response(secured))
-        .with_state(Web { services, guild })
+        .with_state(Web { services, guild, tickets: tickets.map(Arc::new) })
 }
 
 pub(crate) async fn serve(bind: SocketAddr, routes: Router) -> Result<()> {

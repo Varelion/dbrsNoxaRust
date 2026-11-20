@@ -4,11 +4,10 @@
 //!   Ask::Audit    ─► #mod-log, one line at a time, in order
 //!   Ask::People   ─► the member list (one call, kept 10 minutes), else one call per unknown id
 //!   Ask::Channels ─► the server's channels, kept 1 minute
-//!   Ask::Upload   ─► a message in the pictures channel, the image attached
 //!   Ask::Fresh    ─► each Discord link near its expiry signed again (POST attachments/refresh-urls)
 //! ```
 //!
-//! Everything but Audit runs in its own task, so a slow upload never holds up a mod log line.
+//! Everything but Audit runs in its own task, so a slow call never holds up a mod log line.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -16,11 +15,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 use tokio::sync::mpsc::UnboundedReceiver;
-use tracing::{error, info, warn};
+use tracing::{error, warn};
 use twilight_model::channel::ChannelType;
-use twilight_model::channel::message::AllowedMentions;
 use twilight_model::guild::Member;
-use twilight_model::http::attachment::Attachment;
 use serde::{Deserialize, Serialize};
 use twilight_http::request::{Method, RequestBuilder};
 use twilight_model::id::Id;
@@ -29,7 +26,7 @@ use super::app::App;
 use super::modlog;
 use super::profile::icon_url;
 use crate::domain::pictures::expires_at;
-use crate::services::guild::{Ask, Channel, ChannelKind, Person, Upload, UploadRefused, Uploaded, fresh_or};
+use crate::services::guild::{Ask, Channel, ChannelKind, Person, fresh_or};
 use crate::store::characters::CharacterRow;
 
 const NAMES_KEPT: Duration = Duration::from_secs(10 * 60);
@@ -40,7 +37,6 @@ const MEMBER_PAGE: u16 = 1000;
 const LOOKUPS_MAX: usize = 20;
 // A link this close to expiring is fetched again: a page may stay open a while.
 const FRESH_MARGIN_S: u64 = 60 * 60;
-const ATTACHMENT_ID: u64 = 1;
 const REFRESH_PATH: &str = "attachments/refresh-urls";
 // Discord signs at most this many links per call.
 const REFRESH_BATCH: usize = 50;
@@ -90,9 +86,6 @@ pub(crate) async fn answer(app: Arc<App>, mut asks: UnboundedReceiver<Ask>) {
             }
             Ask::Channels { reply } => {
                 tokio::spawn(async move { reply.send(channels(&app).await).ok() });
-            }
-            Ask::Upload { upload, reply } => {
-                tokio::spawn(async move { reply.send(self::upload(&app, upload).await).ok() });
             }
             Ask::Fresh { links, reply } => {
                 tokio::spawn(async move { reply.send(fresh(&app, links).await).ok() });
@@ -215,32 +208,6 @@ async fn channels(app: &App) -> Vec<Channel> {
     channels.sort_by_key(|c| (c.position, c.id));
     *locked(&app.caches.channels) = Some((Instant::now(), channels.clone()));
     channels
-}
-
-async fn upload(app: &App, upload: Upload) -> Result<Uploaded, UploadRefused> {
-    let Some(channel) = app.pictures else {
-        return Err(UploadRefused::NoChannel);
-    };
-    let size = upload.bytes.len();
-    let files = [Attachment::from_bytes(format!("{}.{}", upload.stem, upload.kind.extension()), upload.bytes, ATTACHMENT_ID)];
-    let mentions = AllowedMentions::default();
-    let sent = app.http.create_message(channel).content(&upload.caption).allowed_mentions(Some(&mentions)).attachments(&files).await;
-    let message = match sent {
-        Ok(response) => response.model().await.map_err(|source| {
-            error!(?source, "reading the uploaded picture's message failed");
-            UploadRefused::Refused
-        })?,
-        Err(source) => {
-            error!(?source, %channel, size, "the pictures channel refused the upload");
-            return Err(UploadRefused::Refused);
-        }
-    };
-    let Some(file) = message.attachments.first() else {
-        error!(message = %message.id, "the uploaded picture's message has no attachment");
-        return Err(UploadRefused::Refused);
-    };
-    info!(message = %message.id, size, "picture uploaded");
-    Ok(Uploaded { channel_id: channel.get(), message_id: message.id.get(), url: file.url.clone() })
 }
 
 fn now_s() -> u64 {

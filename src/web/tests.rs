@@ -10,10 +10,12 @@ use axum::http::{HeaderMap, Request, StatusCode, header};
 use tokio::sync::mpsc::{self, UnboundedReceiver};
 use tower::ServiceExt as _;
 
-use super::routes;
+use super::{Trusted, routes};
+use crate::domain::tickets::{By, Grant, Kind};
 use crate::services::Services;
-use crate::services::guild::{Ask, Channel, ChannelKind, Guild, Person, Uploaded};
+use crate::services::guild::{Ask, Channel, ChannelKind, Guild, Person};
 use crate::services::links::Access;
+use crate::services::tickets::Tickets;
 
 const STAFF: u64 = 9;
 const NOVA_PLAYER: u64 = 157;
@@ -21,10 +23,20 @@ const NOXA_PLAYER: u64 = 410;
 const MOD_LOG: u64 = 60;
 const BODY_MAX: usize = 1 << 20;
 const FORM: &str = "application/x-www-form-urlencoded";
+const JSON: &str = "application/json";
+const RELAY_SECRET: &str = "relay secret";
 const UPLOADED: u64 = 77;
 const PICTURES: u64 = 5;
 const JUMP: &str = "https://discord.com/channels/1/5/77";
+const POSTED: &str = "https://cdn.discordapp.com/attachments/5/77/upload.webp?ex=ffffffff";
 const WAIT: Duration = Duration::from_secs(2);
+
+/// Who sends a frame to /api/uploaded.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum From {
+    Worker,
+    Browser,
+}
 
 struct Admin {
     services: Arc<Services>,
@@ -37,7 +49,7 @@ fn channel(id: u64, name: &str, kind: ChannelKind, parent: Option<u64>) -> Chann
     Channel { id, name: name.to_owned(), kind, parent, position: 0 }
 }
 
-// A Discord side that knows one player's name, three channels, and takes every upload.
+// A Discord side that knows one player's name and three channels; links through a relay.
 fn admin() -> Admin {
     let services = Arc::new(Services::memory(0));
     let (guild, mut asks) = Guild::new(1);
@@ -68,10 +80,6 @@ fn admin() -> Admin {
                     ];
                     reply.send(server).ok();
                 }
-                Ask::Upload { upload, reply } => {
-                    let url = format!("https://cdn.discordapp.com/attachments/5/{UPLOADED}/{}.{}?ex=ffffffff", upload.stem, upload.kind.extension());
-                    reply.send(Ok(Uploaded { channel_id: PICTURES, message_id: UPLOADED, url })).ok();
-                }
                 Ask::Fresh { links, reply } => {
                     reply.send(links.into_iter().map(|l| (l.clone(), format!("{l}&fresh"))).collect()).ok();
                 }
@@ -81,7 +89,7 @@ fn admin() -> Admin {
             }
         }
     });
-    let routes = routes(Arc::clone(&services), guild);
+    let routes = routes(Arc::clone(&services), guild, Some(Tickets::new(RELAY_SECRET)));
     let token = services.links().issue(STAFF, Access::Staff).unwrap();
     Admin { services, routes, token, lines }
 }
@@ -126,6 +134,25 @@ impl Admin {
         let (status, _, body) = self.call("GET", &to, None).await;
         assert_eq!(status, StatusCode::OK, "GET {to}");
         body
+    }
+
+    /// A page asking for an upload ticket: its status and JSON answer.
+    async fn ticket(&self, path: &str, asked: &str) -> (StatusCode, serde_json::Value) {
+        let (status, _, body) = self.call("POST", &self.at(path), Some((JSON, asked.as_bytes().to_vec()))).await;
+        (status, serde_json::from_str(&body).unwrap())
+    }
+
+    /// The relay Worker handing back an upload Discord took: as the Worker (trusted) or as a browser.
+    async fn uploaded(&self, ticket: &str, from: From) -> (StatusCode, String) {
+        let body = serde_json::json!({ "ticket": ticket, "url": POSTED, "messageId": UPLOADED.to_string(), "channelId": PICTURES.to_string() });
+        let mut request = Request::builder().method("POST").uri("/api/uploaded").header(header::CONTENT_TYPE, JSON);
+        if from == From::Worker {
+            request = request.extension(Trusted);
+        }
+        let response = self.routes.clone().oneshot(request.body(Body::from(body.to_string())).unwrap()).await.unwrap();
+        let status = response.status();
+        let body = to_bytes(response.into_body(), BODY_MAX).await.unwrap();
+        (status, String::from_utf8(body.to_vec()).unwrap())
     }
 
     async fn line(&mut self) -> String {
@@ -263,49 +290,58 @@ async fn dragon_ball_areas_rolls_and_hiding_places_are_set_from_the_page() {
     assert!(view.balls.iter().all(|b| matches!(b.channel_id, Some(11 | 12))));
 }
 
-const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR";
-
-fn multipart(bytes: &[u8]) -> (String, Vec<u8>) {
-    with_texts(&[], bytes)
-}
-
-// A form with text fields, then the picture.
-fn with_texts(texts: &[(&str, &str)], bytes: &[u8]) -> (String, Vec<u8>) {
-    let boundary = "noxa";
-    let mut body = Vec::new();
-    for (name, value) in texts {
-        body.extend_from_slice(format!("--{boundary}\r\ncontent-disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n").as_bytes());
-    }
-    body.extend_from_slice(format!("--{boundary}\r\ncontent-disposition: form-data; name=\"picture\"; filename=\"nova.png\"\r\ncontent-type: image/png\r\n\r\n").as_bytes());
-    body.extend_from_slice(bytes);
-    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
-    (format!("multipart/form-data; boundary={boundary}"), body)
+// The ticket's text, from a JSON answer that has one.
+fn ticket_of(answer: &serde_json::Value) -> String {
+    assert_eq!(answer["ok"], true, "{answer}");
+    answer["ticket"].as_str().unwrap().to_owned()
 }
 
 #[tokio::test]
-async fn a_picture_uploads_in_the_background_and_becomes_the_sheets() {
+async fn a_sheet_uploads_through_the_relay_and_the_worker_alone_hands_back_the_link() {
     let mut admin = admin();
-    admin.services.settings().set_mod_log(MOD_LOG).unwrap();
-    admin.post(&format!("/players/{NOVA_PLAYER}/characters"), "slot=1&name=Captain+Nova").await;
-    admin.line().await;
+    admin.services.characters().add(NOVA_PLAYER, 1, "Captain Nova", STAFF).unwrap();
     let nova = admin.services.characters().of_player(NOVA_PLAYER).unwrap().remove(0);
-    let path = admin.at(&format!("/characters/{}/picture", nova.id));
+    let ticket = format!("/characters/{}/upload-ticket", nova.id);
 
-    let (kind, body) = multipart(b"<svg onload=alert(1)>");
-    let (status, _, _) = admin.call("POST", &path, Some((&kind, body))).await;
-    assert_eq!(status, StatusCode::SEE_OTHER);
-    assert!(admin.get(&format!("/characters/{}", nova.id)).await.contains("not a PNG, JPEG, GIF or WebP"));
-
-    let (kind, body) = multipart(PNG);
-    let (status, _, _) = admin.call("POST", &path, Some((&kind, body))).await;
-    assert_eq!(status, StatusCode::SEE_OTHER);
-    assert_eq!(admin.line().await, format!("🖼️ <@{STAFF}> uploaded a picture for **Captain Nova** (<@{NOVA_PLAYER}>): {JUMP} · admin pages"));
-
-    let row = admin.services.sheets().get(nova.id).unwrap().unwrap();
-    assert_eq!(row.picture_message, Some(UPLOADED));
+    // The page loads the upload script, which the CSP allows: from here, never inline.
     let page = admin.get(&format!("/characters/{}", nova.id)).await;
-    assert!(page.contains(&format!("src=\"https://cdn.discordapp.com/attachments/5/{UPLOADED}/captain-nova.png?ex=ffffffff&amp;fresh\"")));
-    assert!(page.contains("Uploaded picture in use."));
+    assert!(page.contains(&format!("data-ticket=\"/a/{}{ticket}\"", admin.token)));
+    assert!(page.contains("<script src=\"/upload.js\" defer></script>"));
+    let (status, headers, script) = admin.call("GET", "/upload.js", None).await;
+    assert_eq!((status, headers[header::CONTENT_TYPE].to_str().unwrap()), (StatusCode::OK, "text/javascript; charset=utf-8"));
+    assert!(script.contains("X-Upload-Ticket"));
+    let csp = headers[header::CONTENT_SECURITY_POLICY].to_str().unwrap().to_owned();
+    assert!(csp.contains("script-src 'self';") && csp.contains("connect-src 'self';"), "{csp}");
+
+    let (status, answer) = admin.ticket(&ticket, r#"{"target":"picture"}"#).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(answer["error"].as_str().unwrap().contains("Set the mod log first"));
+    admin.services.settings().set_mod_log(MOD_LOG).unwrap();
+
+    let (status, answer) = admin.ticket(&ticket, r#"{"target":"picture"}"#).await;
+    assert_eq!(status, StatusCode::OK);
+    let text = ticket_of(&answer);
+
+    // A browser cannot hand back a link: only the Worker's own frame reaches the route.
+    assert_eq!(admin.uploaded(&text, From::Browser).await.0, StatusCode::NOT_FOUND);
+    let (status, body) = admin.uploaded(&text, From::Worker).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.contains("The new picture is up."));
+    assert_eq!(admin.line().await, format!("🖼️ <@{STAFF}> uploaded a picture for **Captain Nova** (<@{NOVA_PLAYER}>): {JUMP} · admin pages"));
+    let row = admin.services.sheets().get(nova.id).unwrap().unwrap();
+    assert_eq!((row.picture_url.as_deref(), row.picture_message), (Some(POSTED), Some(UPLOADED)));
+    assert!(admin.get(&format!("/characters/{}", nova.id)).await.contains("Uploaded picture in use."));
+
+    // Each ticket is good once; one changed or signed elsewhere, never.
+    assert_eq!(admin.uploaded(&text, From::Worker).await.0, StatusCode::CONFLICT);
+    let (status, answer) = admin.ticket(&ticket, r#"{"target":"picture"}"#).await;
+    assert_eq!(status, StatusCode::OK);
+    let mut forged = ticket_of(&answer);
+    forged.insert(1, 'A');
+    assert_eq!(admin.uploaded(&forged, From::Worker).await.0, StatusCode::FORBIDDEN);
+    let grant = Grant { guild: 1, uploader: STAFF, owner: NOVA_PLAYER, character: nova.id, kind: Kind::Picture, expression: None, caption: String::new(), by: By::Staff, color: String::new() };
+    let stranger = Tickets::new("another secret").issue(grant, 0).unwrap();
+    assert_eq!(admin.uploaded(&stranger, From::Worker).await.0, StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]
@@ -319,34 +355,36 @@ async fn a_player_uploads_their_own_picture_and_expressions_and_staff_see_each_i
     let nova = admin.services.characters().of_player(NOVA_PLAYER).unwrap().remove(0);
     let noxa = admin.services.characters().of_player(NOXA_PLAYER).unwrap().remove(0);
     let home = format!("/p/{}", admin.services.links().issue(NOVA_PLAYER, Access::Player).unwrap());
+    assert!(admin.get(&home).await.contains("<script src=\"/upload.js\" defer></script>"));
 
-    // Not theirs, not an image, a bad name: refused before anything goes to Discord.
-    let (kind, body) = multipart(PNG);
-    admin.call("POST", &format!("{home}/characters/{}/picture", noxa.id), Some((&kind, body))).await;
-    assert!(admin.get(&home).await.contains("Pick one of your own characters."));
-    let (kind, body) = multipart(b"GIF? no");
-    admin.call("POST", &format!("{home}/characters/{}/picture", nova.id), Some((&kind, body))).await;
-    assert!(admin.get(&home).await.contains("not a PNG, JPEG, GIF or WebP"));
-    let (kind, body) = with_texts(&[("name", "two words")], PNG);
-    admin.call("POST", &format!("{home}/characters/{}/expressions/upload", nova.id), Some((&kind, body))).await;
-    assert!(admin.get(&home).await.contains("Name: 1 to 20 letters"));
+    // Not theirs, a bad name, a bad colour, nonsense: refused before any ticket is signed.
+    let (status, answer) = admin.ticket(&format!("{home}/characters/{}/upload-ticket", noxa.id), r#"{"target":"picture"}"#).await;
+    assert_eq!((status, answer["error"].as_str()), (StatusCode::FORBIDDEN, Some("Pick one of your own characters.")));
+    let mine = format!("{home}/characters/{}/upload-ticket", nova.id);
+    let (_, answer) = admin.ticket(&mine, r#"{"target":"expression","name":"two words"}"#).await;
+    assert!(answer["error"].as_str().unwrap().contains("Name: 1 to 20 letters"));
+    let (_, answer) = admin.ticket(&mine, r#"{"target":"expression","name":"happy","color":"red-ish"}"#).await;
+    assert_eq!(answer["ok"], false);
+    let (status, _) = admin.ticket(&mine, r#"{"target":"selfie"}"#).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
 
-    let (kind, body) = multipart(PNG);
-    admin.call("POST", &format!("{home}/characters/{}/picture", nova.id), Some((&kind, body))).await;
+    let (_, answer) = admin.ticket(&mine, r#"{"target":"picture"}"#).await;
+    admin.uploaded(&ticket_of(&answer), From::Worker).await;
     assert_eq!(admin.line().await, format!("🖼️ Player image, a picture for **Captain Nova**, submitted by <@{NOVA_PLAYER}>: {JUMP} · /mypage"));
     assert_eq!(admin.services.sheets().get(nova.id).unwrap().unwrap().picture_message, Some(UPLOADED));
 
-    let (kind, body) = with_texts(&[("name", "Happy"), ("color", "#C0392B")], PNG);
-    admin.call("POST", &format!("{home}/characters/{}/expressions/upload", nova.id), Some((&kind, body))).await;
+    let (_, answer) = admin.ticket(&mine, r##"{"target":"expression","name":"Happy","color":"#C0392B"}"##).await;
+    let (status, body) = admin.uploaded(&ticket_of(&answer), From::Worker).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("The happy expression is up."));
     assert_eq!(admin.line().await, format!("🖼️ Player image, expression **happy** for **Captain Nova**, submitted by <@{NOVA_PLAYER}>: {JUMP} · /mypage"));
     let happy = admin.services.sheets().expressions(nova.id).unwrap().remove(0);
-    assert_eq!((happy.name.as_str(), happy.color), ("happy", Some(0xC0_39_2B)));
-    assert!(happy.url.contains("captain-nova-happy.png"));
+    assert_eq!((happy.name.as_str(), happy.color, happy.url.as_str()), ("happy", Some(0xC0_39_2B), POSTED));
     assert!(admin.get(&home).await.contains(&format!("{}&amp;fresh", super::html::esc(&happy.url))));
 
     // Staff upload any sheet's expression, logged as theirs.
-    let (kind, body) = with_texts(&[("name", "angry")], PNG);
-    admin.call("POST", &admin.at(&format!("/characters/{}/expressions/upload", noxa.id)), Some((&kind, body))).await;
+    let (_, answer) = admin.ticket(&format!("/characters/{}/upload-ticket", noxa.id), r#"{"target":"expression","name":"angry"}"#).await;
+    admin.uploaded(&ticket_of(&answer), From::Worker).await;
     assert_eq!(admin.line().await, format!("🖼️ <@{STAFF}> uploaded expression **angry** for **Noxa** (<@{NOXA_PLAYER}>): {JUMP} · admin pages"));
 }
 

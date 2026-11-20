@@ -138,7 +138,7 @@ pub(crate) async fn run(config: Config, services: Arc<Services>, asks: Unbounded
     // systemctl stop and restart send SIGTERM; a terminal sends Ctrl-C. Either stops cleanly.
     let mut terminate = signal(SignalKind::terminate()).context("listening for SIGTERM")?;
 
-    let places = Places { web_url: config.web_url.clone(), pictures: config.pictures };
+    let places = Places { web_url: config.web_url.clone() };
     let app = Arc::new(App::new(http, app_id, config.guild_id, services, places, reading));
     tokio::spawn(telemetry::health(Arc::clone(&app.stats)));
     tokio::spawn(guild::answer(Arc::clone(&app), asks));

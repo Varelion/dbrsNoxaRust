@@ -1,300 +1,298 @@
 //! Image uploads: a character's picture or one of its expressions, by staff on a sheet or by a
-//! player on their own page. Discord hosts the file in the pictures channel; its link is kept and
-//! signed again whenever it is used. Every upload's mod log line links the message, so staff see it.
+//! player on their own page. The image never reaches the bot (it runs on a Raspberry Pi): the page
+//! shrinks it, the bot signs a ticket, and the relay Worker posts it to #pictures through a webhook,
+//! then hands the bot the link. The bot keeps the link, signs it again whenever it is used, and logs
+//! every upload with a mod log line linking the message, so staff see each image.
 //!
 //! ```text
-//!   [file] ─► PNG | JPEG | GIF | WebP, up to 8 MiB ─► back at once: "Uploading…"
-//!          └─ in the background ─► #pictures "🖼️ Captain Nova · happy · @player"
-//!                               ─► the picture or expression saved ─► 🖼️ mod log line
-//!                               ─► how it went, on the next page the link opens
+//!   page ─ POST …/characters/<id>/upload-ticket {target, name?, color?} ─► bot: checks, signs (5 min)
+//!   page ─ ≤1024 px WebP ─ POST /upload, X-Upload-Ticket ─► Worker ─► #pictures "🖼️ Captain Nova · …"
+//!   Worker ─ trusted frame: POST /api/uploaded {ticket, url, messageId, channelId} ─► bot:
+//!        ticket checked again, spent ─► the picture or expression saved ─► 🖼️ mod log line
+//!   page ◄─ { ok, message } ◄─ Worker
 //! ```
+//!
+//! The ticket fixes the character, the target and the caption: the Worker trusts nothing the page says.
 
-use std::collections::HashMap;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use axum::extract::multipart::MultipartError;
-use axum::extract::{Multipart, Path, State};
-use tracing::error;
+use axum::Extension;
+use axum::body::Bytes;
+use axum::extract::{Path, State};
+use axum::http::{StatusCode, header};
+use axum::response::{IntoResponse, Response};
+use serde::{Deserialize, Serialize};
+use tracing::{error, warn};
 
 use super::html::{esc, plain};
 use super::sheets::expression_refusal;
-use super::{NO_MOD_LOG, Page, Web, done, expired, owner, refused};
-use crate::domain::pictures::{ImageKind, UPLOAD_MAX, kind_of};
+use super::{NO_MOD_LOG, Page, Trusted, Web, owner};
 use crate::domain::proxy::clean_expression;
-use crate::services::guild::{Upload, UploadRefused};
-use crate::services::links::{Access, Notice};
+use crate::domain::tickets::{Broken, By, Grant, Kind};
+use crate::services::guild::Uploaded;
+use crate::services::links::Access;
 use crate::services::sheets::{ExpressionSaved, expression_refused};
+use crate::services::tickets::Refused;
 use crate::store::characters::CharacterRow;
 
 const PICTURE_FIELD: &str = "picture";
 const NAME_FIELD: &str = "name";
 const COLOR_FIELD: &str = "color";
-const UPLOAD_MIB: usize = UPLOAD_MAX / (1024 * 1024);
 const ACCEPT: &str = "image/png,image/jpeg,image/gif,image/webp";
+const JSON: &str = "application/json";
+const SCRIPT_TYPE: &str = "text/javascript; charset=utf-8";
+const SECURE_LINK: &str = "https://";
+/// The page script: shrink, ticket, send. Served at UPLOAD_SCRIPT_PATH.
+const SCRIPT: &str = include_str!("upload.js");
+pub(super) const UPLOAD_SCRIPT_PATH: &str = "/upload.js";
+/// One per page that has an upload form; the script binds every form marked data-upload.
+pub(super) const UPLOAD_SCRIPT: &str = "<script src=\"/upload.js\" defer></script>";
 const GONE: &str = "That character is gone.";
 const NOT_YOURS: &str = "Pick one of your own characters.";
-const UPLOADING: &str = "Uploading… reload in a few seconds to see it.";
+const EXPIRED: &str = "This link has expired. Ask for a new one.";
+const NO_RELAY: &str = "Uploads go through the relay, and this bot has none (RELAY_URL).";
+const BAD_ASK: &str = "That upload request was not understood.";
+const BAD_TICKET: &str = "That upload ticket is not valid. Try again.";
+const OLD_TICKET: &str = "That upload took over 5 minutes. Try again.";
+const SPENT_TICKET: &str = "That upload was already saved.";
+const SAVE_FAILED: &str = "Saving the picture failed. It is in the bot's log.";
 /// Ends a player's mod log line, so staff know where it came from.
 const VIA_PAGE: &str = " · /mypage";
 
-/// The form for a character's picture; `action` is where it posts.
-pub(super) fn picture_form(action: &str) -> String {
+/// The form for a character's picture; `ticket` is where it asks for its upload ticket.
+pub(super) fn picture_form(ticket: &str) -> String {
     format!(
-        "<form method=\"post\" action=\"{}\" enctype=\"multipart/form-data\" class=\"row\">\
-         <label>New picture: PNG, JPEG, GIF or WebP, up to {UPLOAD_MIB} MiB<input type=\"file\" name=\"{PICTURE_FIELD}\" accept=\"{ACCEPT}\" required></label>\
-         <button type=\"submit\">Upload</button></form>\
-         <p class=\"dim small\">Kept as a message in the pictures channel, so Discord hosts it.</p>",
-        esc(action)
+        "<form data-upload=\"picture\" data-ticket=\"{}\" class=\"row\">\
+         <label>New picture: PNG, JPEG, GIF or WebP<input type=\"file\" name=\"{PICTURE_FIELD}\" accept=\"{ACCEPT}\" required></label>\
+         <button type=\"submit\">Upload</button><output class=\"small\" role=\"status\"></output></form>\
+         <p class=\"dim small\">Shrunk to 1024 px in your browser, then kept as a message in the pictures channel, so Discord hosts it.</p>",
+        esc(ticket)
     )
 }
 
-/// The form for an expression's picture, uploaded; `action` is where it posts.
-pub(super) fn expression_form(action: &str) -> String {
+/// The form for an expression's picture, uploaded; `ticket` is where it asks for its upload ticket.
+pub(super) fn expression_form(ticket: &str) -> String {
     format!(
-        "<form method=\"post\" action=\"{}\" enctype=\"multipart/form-data\" class=\"grid\">\
+        "<form data-upload=\"expression\" data-ticket=\"{}\" class=\"grid\">\
          <label>Name<input name=\"{NAME_FIELD}\" maxlength=\"20\" placeholder=\"happy\" required></label>\
-         <label>Image, up to {UPLOAD_MIB} MiB<input type=\"file\" name=\"{PICTURE_FIELD}\" accept=\"{ACCEPT}\" required></label>\
+         <label>Image<input type=\"file\" name=\"{PICTURE_FIELD}\" accept=\"{ACCEPT}\" required></label>\
          <label>Colour bar, optional<input name=\"{COLOR_FIELD}\" maxlength=\"7\" placeholder=\"#C0392B\"></label>\
-         <div><button type=\"submit\">Upload expression</button></div></form>",
-        esc(action)
+         <div><button type=\"submit\">Upload expression</button> <output class=\"small\" role=\"status\"></output></div></form>",
+        esc(ticket)
     )
 }
 
-/// Who sent an upload: staff on the admin pages, or the character's player on their page.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum By {
-    Staff,
-    Player,
+/// What the page asks a ticket for: `{"target":"expression","name":"happy","color":"#C0392B"}`.
+#[derive(Deserialize)]
+struct Asked {
+    target: Kind,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    color: String,
 }
 
-/// What a form uploads.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Wanted {
-    Picture,
-    Expression,
+/// What the Worker hands back once Discord has the file.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Posted {
+    ticket: String,
+    url: String,
+    message_id: String,
+    channel_id: String,
 }
 
-/// What an upload becomes.
-enum Target {
-    Picture,
-    Expression { name: String, color: String },
+/// Every answer here is JSON for the page script: `{ ok, ticket? , message?, error? }`.
+#[derive(Serialize, Default)]
+struct Answer {
+    ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ticket: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
 }
 
-/// An upload on its way: whose character, who sent it, and what it becomes.
-struct Job {
-    id: i64,
-    sender: u64,
-    by: By,
-    target: Target,
-    upload: Upload,
+fn json(status: StatusCode, answer: &Answer) -> Response {
+    let body = serde_json::to_string(answer).unwrap_or_default();
+    (status, [(header::CONTENT_TYPE, JSON)], body).into_response()
 }
 
-/// A form as sent: the image, and its text fields.
-struct Sent {
-    bytes: Vec<u8>,
-    kind: ImageKind,
-    texts: HashMap<String, String>,
+fn no(status: StatusCode, why: impl Into<String>) -> Response {
+    json(status, &Answer { error: Some(why.into()), ..Answer::default() })
 }
 
-impl Sent {
-    fn text(&self, field: &str) -> String {
-        self.texts.get(field).cloned().unwrap_or_default()
-    }
+fn yes(message: impl Into<String>) -> Response {
+    json(StatusCode::OK, &Answer { ok: true, message: Some(message.into()), ..Answer::default() })
 }
 
-// Every field of the form; Err: it did not arrive whole.
-async fn fields(mut multipart: Multipart) -> Result<(Vec<u8>, HashMap<String, String>), MultipartError> {
-    let (mut bytes, mut texts) = (Vec::new(), HashMap::new());
-    while let Some(field) = multipart.next_field().await? {
-        let name = field.name().unwrap_or_default().to_owned();
-        if name == PICTURE_FIELD {
-            bytes = field.bytes().await?.to_vec();
-            continue;
+fn now_s() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs())
+}
+
+pub(super) async fn script() -> Response {
+    ([(header::CONTENT_TYPE, SCRIPT_TYPE)], SCRIPT).into_response()
+}
+
+// The caption the Worker posts with the image: whose it is, what it becomes, who sent it.
+fn caption(row: &CharacterRow, sender: u64, expression: Option<&str>) -> String {
+    let label = expression.map_or_else(|| "picture".to_owned(), |name| format!("`{name}`"));
+    format!("🖼️ **{}** · {label} ({}) · uploaded by <@{sender}>", plain(&row.name), owner(row.player_id))
+}
+
+// What the page asks for, checked before a ticket is signed. Err: why not.
+fn grant_of(web: &Web, row: &CharacterRow, sender: u64, by: By, body: &[u8]) -> Result<Grant, String> {
+    let asked: Asked = serde_json::from_slice(body).map_err(|_| BAD_ASK.to_owned())?;
+    let expression = match asked.target {
+        Kind::Picture => None,
+        Kind::Expression => {
+            if let Some(refusal) = expression_refused(&asked.name, &asked.color) {
+                return Err(expression_refusal(&refusal).to_owned());
+            }
+            Some(clean_expression(&asked.name).unwrap_or(asked.name))
         }
-        texts.insert(name, field.text().await?);
-    }
-    Ok((bytes, texts))
+    };
+    let caption = caption(row, sender, expression.as_deref());
+    let color = if asked.target == Kind::Expression { asked.color } else { String::new() };
+    Ok(Grant { guild: web.guild.server(), uploader: sender, owner: row.player_id, character: row.id, kind: asked.target, expression, caption, by, color })
 }
 
-// The form's image, checked, or why it is refused.
-async fn read(multipart: Multipart) -> Result<Sent, String> {
-    let (bytes, texts) = match fields(multipart).await {
-        Ok(read) => read,
+// A signed ticket for the page, or why not.
+fn ticket_for(web: &Web, row: &CharacterRow, sender: u64, by: By, body: &[u8]) -> Response {
+    let Some(tickets) = web.tickets.as_deref() else {
+        return no(StatusCode::SERVICE_UNAVAILABLE, NO_RELAY);
+    };
+    let grant = match grant_of(web, row, sender, by, body) {
+        Ok(grant) => grant,
+        Err(why) => return no(StatusCode::UNPROCESSABLE_ENTITY, why),
+    };
+    match tickets.issue(grant, now_s()) {
+        Ok(ticket) => json(StatusCode::OK, &Answer { ok: true, ticket: Some(ticket), ..Answer::default() }),
         Err(source) => {
-            tracing::warn!(?source, "an upload did not arrive whole");
-            return Err(format!("That upload did not arrive whole. Pictures go up to {UPLOAD_MIB} MiB."));
+            error!(error = ?source, "signing an upload ticket failed");
+            no(StatusCode::INTERNAL_SERVER_ERROR, SAVE_FAILED)
         }
-    };
-    if bytes.is_empty() {
-        return Err("Pick an image file first.".to_owned());
     }
-    if bytes.len() > UPLOAD_MAX {
-        return Err(format!("That picture is over {UPLOAD_MIB} MiB."));
-    }
-    let Some(kind) = kind_of(&bytes) else {
-        return Err("That is not a PNG, JPEG, GIF or WebP image.".to_owned());
+}
+
+// Staff: any character's picture or expression, once the mod log is set.
+pub(super) async fn staff_ticket(State(web): State<Web>, Path((token, id)): Path<(String, i64)>, body: Bytes) -> Page {
+    let Some(session) = web.staff(&token) else {
+        return Ok(no(StatusCode::NOT_FOUND, EXPIRED));
     };
-    Ok(Sent { bytes, kind, texts })
-}
-
-// A file's name from the character's, and the expression's: "captain-nova-happy".
-fn stem_of(name: &str) -> String {
-    let stem: String = name.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' }).collect();
-    let stem = stem.split('-').filter(|part| !part.is_empty()).collect::<Vec<_>>().join("-");
-    if stem.is_empty() { PICTURE_FIELD.to_owned() } else { stem }
-}
-
-// What the form asks for, checked before anything goes to Discord.
-fn target_of(sent: &Sent, wanted: Wanted) -> Result<Target, String> {
-    if wanted == Wanted::Picture {
-        return Ok(Target::Picture);
+    if !web.logged()? {
+        return Ok(no(StatusCode::CONFLICT, NO_MOD_LOG));
     }
-    let (name, color) = (sent.text(NAME_FIELD), sent.text(COLOR_FIELD));
-    if let Some(refusal) = expression_refused(&name, &color) {
-        return Err(expression_refusal(&refusal).to_owned());
+    let Some(row) = web.services.sheets().get(id)? else {
+        return Ok(no(StatusCode::NOT_FOUND, GONE));
+    };
+    Ok(ticket_for(&web, &row, session.staff, By::Staff, &body))
+}
+
+// A player: their own character's picture or expression.
+pub(super) async fn my_ticket(State(web): State<Web>, Path((token, id)): Path<(String, i64)>, body: Bytes) -> Page {
+    let Some(player) = web.services.links().open(&token, Access::Player) else {
+        return Ok(no(StatusCode::NOT_FOUND, EXPIRED));
+    };
+    let Some(row) = web.services.sheets().owned(player, id)? else {
+        return Ok(no(StatusCode::FORBIDDEN, NOT_YOURS));
+    };
+    Ok(ticket_for(&web, &row, player, By::Player, &body))
+}
+
+// The character the grant names, still there and, for a player, still theirs. Err: why not.
+fn row_for(web: &Web, grant: &Grant) -> anyhow::Result<Result<CharacterRow, &'static str>> {
+    let sheets = web.services.sheets();
+    if grant.by == By::Player {
+        return Ok(sheets.owned(grant.uploader, grant.character)?.ok_or(NOT_YOURS));
     }
-    let name = clean_expression(&name).unwrap_or(name);
-    Ok(Target::Expression { name, color })
+    if !web.logged()? {
+        return Ok(Err(NO_MOD_LOG));
+    }
+    Ok(sheets.get(grant.character)?.ok_or(GONE))
 }
 
-// The job for an upload: its file named and captioned for the pictures channel.
-fn job_of(row: &CharacterRow, sender: u64, by: By, target: Target, sent: Sent) -> Job {
-    let (label, stem) = match &target {
-        Target::Picture => ("picture".to_owned(), stem_of(&row.name)),
-        Target::Expression { name, .. } => (format!("`{name}`"), stem_of(&format!("{} {name}", row.name))),
+// The upload saved where it belongs: the sheet's picture, or the expression. Err: why not.
+fn save(web: &Web, grant: &Grant, uploaded: &Uploaded) -> anyhow::Result<Result<CharacterRow, &'static str>> {
+    let sheets = web.services.sheets();
+    let Some(name) = grant.expression.as_deref().filter(|_| grant.kind == Kind::Expression) else {
+        return Ok(sheets.set_picture(grant.character, &uploaded.url, uploaded.message_id)?.ok_or(GONE));
     };
-    let caption = format!("🖼️ **{}** · {label} ({}) · uploaded by <@{sender}>", plain(&row.name), owner(row.player_id));
-    let upload = Upload { bytes: sent.bytes, kind: sent.kind, caption, stem };
-    Job { id: row.id, sender, by, target, upload }
+    match sheets.save_expression(grant.character, name, &uploaded.url, &grant.color)? {
+        ExpressionSaved::Done(_) => Ok(sheets.get(grant.character)?.ok_or(GONE)),
+        other => Ok(Err(expression_refusal(&other))),
+    }
 }
 
-// A big file takes Discord a while, longer than the relay waits for a page: it goes up in the
-// background, and says how it went on the next page this link opens.
-fn send(web: &Web, token: &str, job: Job) {
-    let (background, token) = (web.clone(), token.to_owned());
-    tokio::spawn(async move {
-        let notice = finish(&background, job).await;
-        background.services.links().tell(&token, notice);
-    });
-}
-
-// The mod log line for a saved upload.
-fn audit(web: &Web, by: By, sender: u64, target: &Target, row: &CharacterRow, jump: &str) {
-    let what = match target {
-        Target::Picture => "a picture".to_owned(),
-        Target::Expression { name, .. } => format!("expression **{}**", plain(name)),
+// The mod log line for a saved upload, linking its message in #pictures.
+fn audit(web: &Web, grant: &Grant, row: &CharacterRow, jump: &str) {
+    let what = match grant.expression.as_deref() {
+        Some(name) => format!("expression **{}**", plain(name)),
+        None => "a picture".to_owned(),
     };
-    let name = plain(&row.name);
-    match by {
+    let (name, sender) = (plain(&row.name), grant.uploader);
+    match grant.by {
         By::Staff => web.audit(&format!("🖼️ <@{sender}> uploaded {what} for **{name}** ({}): {jump}", owner(row.player_id))),
         By::Player => web.guild.audit(format!("🖼️ Player image, {what} for **{name}**, submitted by <@{sender}>: {jump}{VIA_PAGE}")),
     }
 }
 
-// The upload saved where it belongs: the sheet's picture, or the expression. Err: why not.
-fn save(web: &Web, id: i64, target: &Target, url: &str, message_id: u64) -> anyhow::Result<Result<CharacterRow, &'static str>> {
-    let sheets = web.services.sheets();
-    let Target::Expression { name, color } = target else {
-        return Ok(sheets.set_picture(id, url, message_id)?.ok_or(GONE));
+// The Worker's frame read: its ticket's grant, and where Discord put the file. Err: the refusal.
+fn posted(web: &Web, body: &[u8]) -> Result<(Grant, Uploaded), (StatusCode, &'static str)> {
+    let Ok(posted) = serde_json::from_slice::<Posted>(body) else {
+        return Err((StatusCode::BAD_REQUEST, BAD_ASK));
     };
-    match sheets.save_expression(id, name, url, color)? {
-        ExpressionSaved::Done(_) => Ok(sheets.get(id)?.ok_or(GONE)),
-        other => Ok(Err(expression_refusal(&other))),
+    let ids = (posted.message_id.parse::<u64>(), posted.channel_id.parse::<u64>());
+    let (Ok(message_id), Ok(channel_id)) = ids else {
+        return Err((StatusCode::BAD_REQUEST, BAD_ASK));
+    };
+    if !posted.url.starts_with(SECURE_LINK) {
+        return Err((StatusCode::BAD_REQUEST, BAD_ASK));
     }
+    let Some(tickets) = web.tickets.as_deref() else {
+        return Err((StatusCode::SERVICE_UNAVAILABLE, NO_RELAY));
+    };
+    let grant = match tickets.redeem(&posted.ticket, now_s()) {
+        Ok(grant) => grant,
+        Err(Refused::Broken(Broken::Expired)) => return Err((StatusCode::FORBIDDEN, OLD_TICKET)),
+        Err(Refused::Broken(_)) => return Err((StatusCode::FORBIDDEN, BAD_TICKET)),
+        Err(Refused::Spent) => return Err((StatusCode::CONFLICT, SPENT_TICKET)),
+    };
+    // A ticket signed for another server (a second bot sharing the secret) is not this one's.
+    if grant.guild != web.guild.server() {
+        return Err((StatusCode::FORBIDDEN, BAD_TICKET));
+    }
+    Ok((grant, Uploaded { channel_id, message_id, url: posted.url }))
 }
 
-async fn finish(web: &Web, job: Job) -> Notice {
-    let Job { id, sender, by, target, upload } = job;
-    let uploaded = match web.guild.upload(upload).await {
-        Ok(uploaded) => uploaded,
-        Err(UploadRefused::NoChannel) => return refused("Uploads are off: PICTURES_CHANNEL is not set in the bot's .env."),
-        Err(UploadRefused::Refused) => return refused("Discord refused the picture. Can the bot post and attach files in the pictures channel?"),
-        Err(UploadRefused::Gone) => return refused("The bot is not connected to Discord right now. Try again shortly."),
+/// POST /api/uploaded: only the relay Worker's own frame (trusted) reaches it; for anyone else it is not here.
+pub(super) async fn uploaded(State(web): State<Web>, trusted: Option<Extension<Trusted>>, body: Bytes) -> Page {
+    if trusted.is_none() {
+        return Ok(StatusCode::NOT_FOUND.into_response());
+    }
+    let (grant, uploaded) = match posted(&web, &body) {
+        Ok(read) => read,
+        Err((status, why)) => return Ok(no(status, why)),
     };
-    let row = match save(web, id, &target, &uploaded.url, uploaded.message_id) {
+    let saved = row_for(&web, &grant).and_then(|row| match row {
+        Ok(_) => save(&web, &grant, &uploaded),
+        Err(why) => Ok(Err(why)),
+    });
+    let row = match saved {
         Ok(Ok(row)) => row,
-        Ok(Err(why)) => return refused(why),
+        Ok(Err(why)) => {
+            warn!(character = grant.character, %why, "an upload reached #pictures but was not saved");
+            return Ok(no(StatusCode::UNPROCESSABLE_ENTITY, why));
+        }
         Err(source) => {
             error!(error = ?source, "saving an upload failed");
-            return refused("Saving the picture failed. It is in the bot's log.");
+            return Ok(no(StatusCode::INTERNAL_SERVER_ERROR, SAVE_FAILED));
         }
     };
-    audit(web, by, sender, &target, &row, &uploaded.jump(web.guild.server()));
-    match target {
-        Target::Picture => done("The new picture is up."),
-        Target::Expression { name, .. } => done(format!("The {name} expression is up.")),
-    }
-}
-
-// Staff: any character's picture or expression, once the mod log is set.
-async fn by_staff(web: &Web, token: &str, id: i64, multipart: Multipart, wanted: Wanted) -> Page {
-    let Some(session) = web.staff(token) else {
-        return Ok(expired());
-    };
-    let path = format!("/characters/{id}");
-    if !web.logged()? {
-        return Ok(web.back(&session, &path, refused(NO_MOD_LOG)));
-    }
-    let Some(row) = web.services.sheets().get(id)? else {
-        return Ok(web.back(&session, "/characters", refused(GONE)));
-    };
-    let sent = match read(multipart).await {
-        Ok(sent) => sent,
-        Err(why) => return Ok(web.back(&session, &path, refused(why))),
-    };
-    let target = match target_of(&sent, wanted) {
-        Ok(target) => target,
-        Err(why) => return Ok(web.back(&session, &path, refused(why))),
-    };
-    send(web, token, job_of(&row, session.staff, By::Staff, target, sent));
-    Ok(web.back(&session, &path, done(UPLOADING)))
-}
-
-// A player: their own character's picture or expression.
-async fn by_player(web: &Web, token: &str, id: i64, multipart: Multipart, wanted: Wanted) -> Page {
-    let Some(player) = web.services.links().open(token, Access::Player) else {
-        return Ok(expired());
-    };
-    let home = format!("/p/{token}");
-    let Some(row) = web.services.sheets().owned(player, id)? else {
-        return Ok(web.back_to(token, &home, refused(NOT_YOURS)));
-    };
-    let sent = match read(multipart).await {
-        Ok(sent) => sent,
-        Err(why) => return Ok(web.back_to(token, &home, refused(why))),
-    };
-    let target = match target_of(&sent, wanted) {
-        Ok(target) => target,
-        Err(why) => return Ok(web.back_to(token, &home, refused(why))),
-    };
-    send(web, token, job_of(&row, player, By::Player, target, sent));
-    Ok(web.back_to(token, &home, done(UPLOADING)))
-}
-
-pub(super) async fn staff_picture(State(web): State<Web>, Path((token, id)): Path<(String, i64)>, multipart: Multipart) -> Page {
-    by_staff(&web, &token, id, multipart, Wanted::Picture).await
-}
-
-pub(super) async fn staff_expression(State(web): State<Web>, Path((token, id)): Path<(String, i64)>, multipart: Multipart) -> Page {
-    by_staff(&web, &token, id, multipart, Wanted::Expression).await
-}
-
-pub(super) async fn my_picture(State(web): State<Web>, Path((token, id)): Path<(String, i64)>, multipart: Multipart) -> Page {
-    by_player(&web, &token, id, multipart, Wanted::Picture).await
-}
-
-pub(super) async fn my_expression(State(web): State<Web>, Path((token, id)): Path<(String, i64)>, multipart: Multipart) -> Page {
-    by_player(&web, &token, id, multipart, Wanted::Expression).await
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn file_names_come_from_the_character_name() {
-        assert_eq!(stem_of("Captain Nova"), "captain-nova");
-        assert_eq!(stem_of("  Gogeta (SSJ4)!! "), "gogeta-ssj4");
-        assert_eq!(stem_of("孫悟空"), "picture");
-        assert_eq!(stem_of("Captain Nova happy"), "captain-nova-happy");
+    audit(&web, &grant, &row, &uploaded.jump(web.guild.server()));
+    match grant.expression {
+        Some(name) => Ok(yes(format!("The {name} expression is up."))),
+        None => Ok(yes("The new picture is up.")),
     }
 }

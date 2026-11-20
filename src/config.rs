@@ -9,7 +9,6 @@
 //!   WEB_URL           the address links point at, e.g. https://dbrs.neokai.org; default http://WEB_BIND
 //!   RELAY_URL         the neoKai relay to dial out to, wss://dbrs.neokai.org/relay; unset: no relay
 //!   RELAY_SECRET      the relay's shared secret; needed with RELAY_URL
-//!   PICTURES_CHANNEL  the channel uploaded pictures are kept in; unset: uploads are off
 //! ```
 
 use std::net::SocketAddr;
@@ -17,7 +16,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use twilight_model::id::Id;
-use twilight_model::id::marker::{ChannelMarker, GuildMarker};
+use twilight_model::id::marker::GuildMarker;
 
 const DEFAULT_DB: &str = "noxadbrs.db";
 const DEFAULT_WEB_BIND: &str = "127.0.0.1:8787";
@@ -37,7 +36,6 @@ pub(crate) struct Config {
     pub(crate) web_bind: Option<SocketAddr>,
     pub(crate) web_url: String,
     pub(crate) relay: Option<Relay>,
-    pub(crate) pictures: Option<Id<ChannelMarker>>,
 }
 
 // A variable that may be unset or blank: None either way.
@@ -70,10 +68,6 @@ impl Config {
         if relay.is_some() && !web_url.starts_with(SECURE_WEB) {
             bail!("WEB_URL must start with {SECURE_WEB} with a relay: links carry a login token");
         }
-        let pictures = match optional("PICTURES_CHANNEL") {
-            Some(text) => Some(text.trim().parse::<u64>().ok().and_then(Id::new_checked).context("PICTURES_CHANNEL is not a channel id")?),
-            None => None,
-        };
-        Ok(Self { token, guild_id, db_path, web_bind, web_url, relay, pictures })
+        Ok(Self { token, guild_id, db_path, web_bind, web_url, relay })
     }
 }

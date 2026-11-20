@@ -51,7 +51,9 @@ async fn start() -> Result<()> {
     let (guild, asks) = Guild::new(config.guild_id.get());
 
     // The admin pages are optional: if they cannot start, the bot runs without them and says why.
-    let routes = web::routes(Arc::clone(&services), guild);
+    // Uploads go through the relay Worker, so only a bot with a relay signs upload tickets.
+    let tickets = config.relay.as_ref().map(|relay| crate::services::tickets::Tickets::new(&relay.secret));
+    let routes = web::routes(Arc::clone(&services), guild, tickets);
     if let Some(bind) = config.web_bind {
         let local = routes.clone();
         tokio::spawn(async move {

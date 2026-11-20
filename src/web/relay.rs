@@ -6,9 +6,13 @@
 //!      ▲                                                               │
 //!      └──────── closed: redial after 1 s, 2 s, … 30 s ◄──────────────┘
 //!
-//!   relay ─► bot  { t:"req", id, method, path, query, type, body, body64? }   body64: a binary body, base64
-//!   bot ─► relay  { t:"res", id, status, headers, body, body64? }
+//!   relay ─► bot  { t:"req", id, method, path, query, type, body, body64?, trusted? }
+//!   bot ─► relay  { t:"res", id, status, headers, body, body64? }              body64: a binary body, base64
 //! ```
+//!
+//! A browser's request comes with a text body or none: images go to the Worker's /upload, never here.
+//! `trusted: true` marks a frame the Worker made itself (an upload's link, for /api/uploaded); the
+//! request then carries `Trusted`. A browser's frame never has it.
 //!
 //! The socket is TLS 1.3 with Encrypted Client Hello, its address looked up over DNS over HTTPS
 //! (`net::sealed`): the network sees TLS to Cloudflare, not which site, nor the secret, nor the pages.
@@ -33,6 +37,8 @@ use axum::http::Uri;
 use tower::ServiceExt as _;
 use tracing::{error, info, warn};
 
+use super::Trusted;
+
 const VERSION: &str = "noxadbrs";
 const HELLO: &str = "hello";
 const WELCOME: &str = "welcome";
@@ -46,8 +52,9 @@ const PING_EVERY: Duration = Duration::from_secs(30);
 const DEAD_AFTER: Duration = Duration::from_secs(90);
 const FIRST_DELAY: Duration = Duration::from_secs(1);
 const MAX_DELAY: Duration = Duration::from_secs(30);
-// A 10 MiB upload is about 13.4 MiB as base64; anything larger is refused before it is read.
-const FRAME_MAX: usize = 16 * 1024 * 1024;
+// A request body is text of up to 256 KiB (relay-dbrs BODY_MAX); JSON escaping can grow it, never past
+// this. Anything larger is refused before it is read.
+const FRAME_MAX: usize = 2 * 1024 * 1024;
 // What a page may answer with; the pages are a few dozen KiB.
 const ANSWER_MAX: usize = 4 * 1024 * 1024;
 const SLOW: Duration = Duration::from_secs(5);
@@ -84,6 +91,8 @@ struct Incoming {
     body: String,
     #[serde(default)]
     body64: Option<String>,
+    #[serde(default)]
+    trusted: bool,
 }
 
 #[derive(Serialize)]
@@ -119,6 +128,9 @@ fn request_of(frame: &Incoming) -> Result<Request<Body>> {
     let mut request = Request::builder().method(frame.method.as_str()).uri(format!("{}{}", frame.path, frame.query));
     if !frame.content_type.is_empty() {
         request = request.header(header::CONTENT_TYPE, frame.content_type.as_str());
+    }
+    if frame.trusted {
+        request = request.extension(Trusted);
     }
     request.header(header::CONTENT_LENGTH, body.len()).body(Body::from(body)).context("a request the routes cannot take")
 }
@@ -290,6 +302,7 @@ mod tests {
             content_type: content_type.to_owned(),
             body: body.to_owned(),
             body64,
+            trusted: false,
         }
     }
 
@@ -303,7 +316,7 @@ mod tests {
     async fn a_request_frame_runs_through_the_routes_and_comes_back_a_response_frame() {
         let services = Arc::new(Services::memory(0));
         let (guild, _asks) = Guild::new(1);
-        let routes = crate::web::routes(Arc::clone(&services), guild);
+        let routes = crate::web::routes(Arc::clone(&services), guild, None);
 
         let out = answer(routes.clone(), frame("GET", "/healthz", "", "", None)).await;
         assert_eq!((out.id.as_str(), out.status, out.body.as_str()), ("r1", 200, "ok"));
@@ -315,17 +328,22 @@ mod tests {
         let out = answer(routes.clone(), find).await;
         assert_eq!((out.status, out.headers.get("location").map(String::as_str)), (303, Some(format!("/a/{token}/players/157").as_str())));
 
-        // A binary body arrives as base64 and is read whole.
-        let multipart = "--b\r\ncontent-disposition: form-data; name=\"picture\"; filename=\"x.png\"\r\ncontent-type: image/png\r\n\r\nnot a png\r\n--b--\r\n";
-        let out = answer(routes, frame("POST", &format!("/a/{token}/characters/1/picture"), "multipart/form-data; boundary=b", "", Some(BASE64.encode(multipart)))).await;
-        assert_eq!(out.status, 303);
+        // Only the Worker's own frame reaches /api/uploaded: a browser's is not found. The Worker's gets in,
+        // and is refused only because these routes have no relay secret to check its ticket with.
+        let body = r#"{"ticket":"x.y","url":"https://cdn.discordapp.com/a.webp","messageId":"7","channelId":"5"}"#;
+        let browser = frame("POST", "/api/uploaded", "application/json", body, None);
+        assert_eq!(answer(routes.clone(), browser).await.status, 404);
+        let worker = Incoming { trusted: true, ..frame("POST", "/api/uploaded", "application/json", body, None) };
+        let out = answer(routes, worker).await;
+        assert_eq!(out.status, 503);
+        assert!(out.body.contains("\"ok\":false"));
     }
 
     #[tokio::test]
     async fn a_body_that_is_not_base64_is_a_500_not_a_crash() {
         let services = Arc::new(Services::memory(0));
         let (guild, _asks) = Guild::new(1);
-        let routes = crate::web::routes(services, guild);
+        let routes = crate::web::routes(services, guild, None);
         let out = answer(routes, frame("POST", "/healthz", "image/png", "", Some("%%%".to_owned()))).await;
         assert_eq!(out.status, STATUS_ERROR);
     }

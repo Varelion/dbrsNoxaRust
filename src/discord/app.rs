@@ -9,7 +9,7 @@ use twilight_http::Client;
 use twilight_model::gateway::payload::incoming::GuildCreate;
 use twilight_model::guild::Permissions;
 use twilight_model::id::Id;
-use twilight_model::id::marker::{ApplicationMarker, ChannelMarker, GuildMarker, RoleMarker, UserMarker};
+use twilight_model::id::marker::{ApplicationMarker, GuildMarker, RoleMarker, UserMarker};
 
 use super::guild::Caches;
 use super::places::Places as Spots;
@@ -25,8 +25,6 @@ pub(crate) struct App {
     pub(crate) stats: Arc<Stats>,
     /// Where the admin pages are opened from, for the links staff are sent.
     pub(crate) web_url: String,
-    /// Where uploaded pictures are kept; None: uploads are off.
-    pub(crate) pictures: Option<Id<ChannelMarker>>,
     pub(crate) caches: Caches,
     /// Where channels sit, and the webhooks that post as characters.
     pub(crate) places: Spots,
@@ -50,10 +48,9 @@ pub(crate) enum Reading {
     CommandsOnly,
 }
 
-/// Where the bot is reached from, beside Discord: the admin pages, and the pictures channel.
+/// Where the bot is reached from, beside Discord: the admin pages.
 pub(crate) struct Places {
     pub(crate) web_url: String,
-    pub(crate) pictures: Option<Id<ChannelMarker>>,
 }
 
 impl App {
@@ -65,7 +62,6 @@ impl App {
             services,
             stats: Arc::new(Stats::new()),
             web_url: places.web_url,
-            pictures: places.pictures,
             caches: Caches::default(),
             places: Spots::default(),
             reading,
